@@ -1,0 +1,23 @@
+{
+  "name": "mockbook",
+  "version": "1.0.0",
+  "description": "mock social media site",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.jx"
+  },
+  "repository": {
+    "type": "git",
+    "url": "github.com/praphael/social/mockbook"
+  },
+  "author": "Patrick Raphael",
+  "license": "MIT",
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.18.3",
+    "js-sha256": "^0.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "path": "^0.12.7",
+    "postgres": "^3.4.3"
+  }
+}

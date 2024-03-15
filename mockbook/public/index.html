@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mockbook</title>
+    <link rel="stylesheet" href="bootstrap.css">
+</head>
+<body>
+    <script src="bootstrap.bundle.js"></script>
+    <header><h3 class="mb-3 mt-3 ms-3">Mockbook</h3></header>
+    <main> <!--- style="background-color: darkorchid"> -->
+
+    <!--- Login -->
+    <div id="loginform" class="container">
+        <div class="col-lg-4"></div>
+        <form class="container col-lg-4">
+            <div class="row mb-3">
+                <label class="form-label col-auto" for="loginusername">Username:</label>
+                <input class="form-control input-md col-md-2" type="text" id="loginusername">
+                <span class="col-lg-6"></span>
+            </div>
+            <div class="row mb-3">
+                <label class="form-label col-auto" for="loginpassword">Password:</label>
+                <input class="form-control input-md col-md-2" type="password" id="loginpassword">
+                <span class="col-lg-6"></span>
+            </div>  
+            <div class="row mb-3">
+                <button class="col-md-4 btn btn-primary" onclick="login()">Login</button>
+                <span class="col-lg-6"></span>
+            </div>
+            <div class="row mt-3">
+                <span class="col-sm-4 me-1 mb-1">New User?</span>
+                <button class="col-sm-4 btn btn-link" onclick="changeState('register')">Register</button>
+                <span class="col-lg-6"></span>
+            </div>
+            <div id="loginresp" hidden></div>
+        </form>
+        <div class="col-lg-4"></div>
+    </div> <!--- login form-->
+
+    <div id="regform" class="container">
+        <div class="col-md-4"></div>
+        <form class="col-md-4 container">
+            <div class="row mb-3">
+                <label class="form-label" for="username">Desired Username:</label>
+                <input class="form-control" type="text" id="newusername" name="newusername">
+            </div>
+            <div class="row mb-3">
+                <label class="form-label" for="password">New Password:</label>
+                <input class="form-control" type="password" id="newpassword" name="newpassword">
+            </div>
+            <div class="row mb-3">
+                <label class="form-label" for="newpassword2">Re-enter Password:</label>
+                <input class="form-control" type="password" id="newpassword2" name="newpassword2">
+            </div>
+            <div class="row mt-3">
+                <button class="col-md-4 btn btn-primary" type="button" onclick="register()">Register</button>
+                <span class="col-lg-4"></span>
+            </div>
+            <div class="row mt-3">
+                <span class="col-sm-4 me-1 mb-1">Already regsitered?</span>
+                <button class="col-sm-4 btn btn-link" onclick="changeState('login')">Login</button>
+                <span class="col-lg-6"></span>
+            </div>
+            <div id="regresp" hidden></div>
+        </form>
+        <div class="col-md-4"></div>
+    </div>
+
+    <div id="feedDiv" class="container"> <!--- style="background-color: lightcoral"> -->
+        <!--- Post area --->
+        <div class="row">
+            <form id="post" class="col-10">
+            <div class="container"><div class="row"> <!--- style="background-color: aquamarine" --->
+                <div class="col-auto"><label class="form-label" for="text">Say something:</label></div>
+                <div class="col-8"><input class="form-control" type="text" id="newPostText"></div>
+                <!--- <div id="postresp" name="postresp" hidden></div> --->
+                <div class="col-auto"><button class="col-auto btn btn-primary" onclick="postNew()" type="button">Post</button></div>
+            </div></div>
+            </form>
+            <div class="col-2"><button class="btn btn-secondary" onclick="logout()">Logout</button></div>
+        </div>
+        <div class="row">
+            <div class="col-3">
+            <div class="container" id="users">Users list</div> <!--- style="background-color: azure" --->
+            </div>
+            <div class="col-9">
+            <div class="container" id="feed">Feed area</div>  <!--- style="background-color: rgb(122, 122, 118)"  --->
+            </div>
+        </div>
+    </div>
+    </main>
+    <script>
+        function changeState(state) {
+            console.log("state= ", state);
+            
+            regForm = document.getElementById("regform");
+            loginForm = document.getElementById("loginform");
+            feed = document.getElementById("feed");
+            users = document.getElementById("users");
+            feedDiv = document.getElementById("feedDiv");
+            post = document.getElementById("post");
+            feedDiv.hidden = true;
+            regForm.hidden = true;
+            loginForm.hidden = true;
+
+            if(state == "login") {
+                loginForm.hidden = false;
+            }
+            else if (state == "feed") {
+                feedDiv.hidden = false;
+                appState.lastupdate = 0;
+                setTimeout("getFeed()", 0);
+                setTimeout("getUserList()", 0);
+           }
+            else if (state == "register") {
+                regForm.hidden = false;
+            }
+        }
+        
+        appState = { token : "", lastupdate : 0 }; 
+        appState.token = sessionStorage.getItem("token");
+        appState.feed = [];
+        appState.userList = [];
+
+        if (appState.token) {
+            changeState("feed");
+        } else {
+            changeState("login");
+        }
+        
+        async function login() {
+            const userData = {
+                username: document.getElementById("loginusername").value,
+                password: document.getElementById("loginpassword").value
+            };
+
+            try {
+                sessionStorage.clear();
+                appState.lastupdate = 0;
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(userData)
+                });
+
+                if (response.ok) {
+                    const j = await response.json();
+                    console.log(`successful login token=${j.token}`);
+                    sessionStorage.setItem("token", j.token)
+                    appState.token = j.token;
+                    changeState("feed");
+                } else {
+                    const errorMessage = await response.text();
+                    alert(`Error: ${errorMessage}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        };
+
+        function logout() {
+            appState.token = "";
+            appState.lastupdate = 0;
+            appState.feed = [];
+            appState.userList = [];
+            sessionStorage.clear();
+            changeState("login");
+        }
+
+        async function reply(e, author, tm) {
+            html = e.outerHTML;
+            formName = `replyform${author}${tm}`
+
+            html += `<form name="${formName}" id="${formName}">`;
+            html += `<label>Reply: </label><input id="${formName}replytobody">`;
+            html += `<button type="submit" class="btn btn-primary">Post</button>`;
+            html += `<button type="button" class="btn btn-secondary" onclick="cancelReply(this,'${formName}')">Cancel</button>`;
+            html += '<div id="replyresponse"></div>';
+            html += '</form>';
+            e.outerHTML = html;
+            
+            document.getElementById(formName).addEventListener('submit', async function(event) {
+                event.preventDefault();
+
+                const replyToData = {
+                    replyto: author,
+                    replytotm: tm,
+                    replytobody: document.getElementById(`${formName}replytobody`).value
+                };
+
+                try {
+                    const response = await fetch('/replyto', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization' : appState.token
+                        },
+                        body: JSON.stringify(replyToData)
+                    });
+
+                    if (response.ok) {
+                        frm = document.getElementById(formName);
+                        frm.outerHTML += response.body;
+                        cancelReply(e, formName);
+                    } else {
+                        const errorMessage = await response.text();
+                        alert(`Error: ${errorMessage}`);
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                }
+            });
+        }
+        
+
+        function cancelReply(e, formName) {
+            console.log("cancelReply formName='", formName);
+            form = document.getElementById(formName);
+            form.remove();
+        }
+
+        async function postNew() {
+            text = document.getElementById("newPostText").value;
+            try {
+                const response = await fetch('/messages', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization' : appState.token
+                    },
+                    body: text
+                });
+
+                if (response.ok) {
+                    const j = await response.json();
+                    // insert the post into the feed
+                    feed = [j].concat(feed);
+                    await renderFeed();
+                } else {
+                    const errorMessage = await response.text();
+                    alert(`Error: ${errorMessage}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        };
+
+        async function register() {
+
+        }
+
+        function formatTimestamp(ts) {
+            const diffTimeSec = (Date.now()-ts) / 1000;
+            const diffMinutes = diffTimeSec / 60
+            const diffHours = diffMinutes / 60
+            const diffDays = diffHours / 24;
+            const diffWeeks = diffDays / 7;    
+            // console.log(`weeks days hours minutes seconds ${diffWeeks} ${diffDays} ${diffHours} ${diffMinutes} ${diffTimeSec}`);
+            if (Math.floor(diffWeeks) > 0) {
+                return `${Math.floor(diffWeeks)} weeks`
+            } else if (Math.floor(diffDays) > 0) {
+                return `${Math.floor(diffDays)} days`
+            } else if (Math.floor(diffHours) > 0) {
+                return `${Math.floor(diffHours)} hrs`
+            } else if (Math.floor(diffMinutes) > 0) {
+                return `${Math.round(diffMinutes)} min`
+            } else {
+                return `${Math.round(diffTimeSec)} sec`
+            }   
+        }
+
+        function renderMessage(m) {
+            let x = `<div class="mb-3 mt-3 row container"><div class="row"><div class="col"><h5>${m.author}</h5></div>`;
+            x += `<div class="col">${formatTimestamp(m.tm)}</div></div>`;
+            x += `<div class="row"><div class="col-auto mb-3 mt-3">${m.body}</div></div>`;
+            x += '<div class="row">';
+            x += `<div class="col-2"><button type="button" class="btn btn-outline-info" onclick="reply(this, '${m.author}', ${m.tm})">Reply</button></div>`;
+            x += `<div class="col-2"><div class="container-fluid"><button type="button" class="btn btn-outline-success">^</button>`;
+            x += `<button type="button" class="btn btn-outline-danger">v</button></div>`;
+            if (!m.replies === undefined && !m.replies == null && m.replies.length > 0) {
+                replies.forEach( (r) => {
+                    x += renderMessage(r,[]);
+                });
+            }
+            x += '</div></div>';
+            return x;
+        }
+        
+        async function renderFeed() {
+            feedHTML = "";
+            appState.feed.forEach((m) => { 
+                feedHTML += renderMessage(m)
+            });
+            document.getElementById("feed").innerHTML = feedHTML;
+        }
+
+        async function getFeed() {
+            console.log("getFeed");
+
+            try {
+                const response = await fetch(`/feed?lastupdate=${appState.lastupdate}`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization' : appState.token
+                    }
+                });
+
+                if (response.ok) {
+                    console.log("getFeed response OK")
+                    const j = await response.json();
+                    appState.feed = j.concat(feed);
+                    await renderFeed();
+                } else {
+                    const errorMessage = await response.text();
+                    alert(`Error: ${errorMessage}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+
+            setTimeout("getFeed()", 3000);
+        }
+
+        async function getUserList() {
+            console.log("getUsers");
+
+            try {
+                const response = await fetch(`/users`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization' : appState.token
+                    }
+                });
+
+                if (response.ok) {
+                    console.log("getUsers response OK")
+                    const j = await response.json();
+                    appState.userList = j;
+                    await renderUserList();
+                } else {
+                    const errorMessage = await response.text();
+                    alert(`Error: ${errorMessage}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+
+            setTimeout("getUserList()", 10000);
+        }
+    </script>
+</body>
+</html>
