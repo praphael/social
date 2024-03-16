@@ -45,7 +45,7 @@ app.post('/login', async (req, res) => {
         console.log("login users= " + users);
         if (users.length > 0 && (sha256(password) == users[0].passhash)) {
             const token = jwt.sign({ id: username }, JWT_SECRET, { expiresIn: '1h' });
-            console.log(`token= ${token}`);
+            console.log(`user ${username} logged in token= ${token}`);
             return res.status(200).json({ token });
         } else {
             console.log("Invalid login from '" + username + "'");
@@ -59,13 +59,15 @@ app.post('/login', async (req, res) => {
 
 app.post('/register', async (req, res) => {
     console.log("register req.params= '", req.params, "'")
-    const username = req.params.newusername;
-    const password = req.params.newuserpassword;
+    const { username, password } = req.body;
+    if (!username || !password) {
+        return res.status(401).json({ message: 'Username/password missing from request' });
+    }
     console.log(`username ${username} password ${password}`);
-    curTime = new Date(Date.now()).toISOString();
+    const tm = Date.now();
     const newuser = { username:username, passhash:sha256(password) };
     try {
-        await db.sql`insert into users
+        await db.sql`INSERT INTO users
             ${db.sql(newuser, 'username', 'passhash')}`;
     } catch(e) {
         console.log("/register error ", e)
@@ -76,9 +78,9 @@ app.post('/register', async (req, res) => {
 
 // Route to create a new message
 app.post('/messages', verifyToken, async (req, res) => {
-    console.log("messages req.body= '", req.body, "'")
-    console.log("messages req.params= '", req.params, "'")
-    const text = req.body.text;
+    console.log("messages req.body= '", req.body, "'");
+    console.log("messages req.params= '", req.params, "'");
+    const msgbody = req.body.msgbody;
     const username = req.username;
     const returnHTML = false;
 
@@ -86,12 +88,12 @@ app.post('/messages', verifyToken, async (req, res) => {
         return res.status(400).json({ message: 'Message text is required' });
     }
     
-    tm = Date.now();
+    const tm = Date.now();
     console.log("messages tm=", tm);
-    const message = { author:username, tm:tm, body:text };
+    const message = { author:username, tm:tm, body:msgbody };
     try {
-        await db.sql`insert into posts (author, tm, body)
-            values(${username}, to_timestamp(${tm}), ${text})`;
+        await db.sql`INSERT INTO posts (author, tm, body)
+            VALUES(${username}, to_timestamp(${tm/1000}), ${msgbody})`;
     } catch(e) {
         console.log("/messages error ", e);
         return res.status(500).json(e);
@@ -140,7 +142,7 @@ app.post('/subscribe/:sub',  verifyToken, async (req, res) => {
     }
     const usersub = { username:username, sub:sub };
     try {
-        await db.sql`insert into user_subs 
+        await db.sql`INSERT INTO usersubs 
             ${db.sql(usersub, 'username', 'sub')}`;
     } catch(e) {
         console.log("/subscribe error ", e)
@@ -152,10 +154,10 @@ app.post('/subscribe/:sub',  verifyToken, async (req, res) => {
 
 // Route to get user's feed
 app.get('/feed', verifyToken, async (req, res) => {
-    console.log("/feed req.params", req.params, " req.query", req.query);
+    console.log("/feed req.query", req.query);
     
     const nDays = 60;
-    const messagesLimit = 20;
+    const messagesLimit = 50;
     const returnHTML = false;
     // last update time
     let lastupdate = Date.now() - 1000*60*60*24*nDays;
@@ -167,32 +169,37 @@ app.get('/feed', verifyToken, async (req, res) => {
     // const username = req.params.username;
     const username = req.username;
     console.log(`feed username='${username}' lastupdate=${lastupdate}`);
-
+    
     try {
-        const messages = await db.sql`SELECT author, trunc(1000*extract(epoch from tm)) as tm, body 
-            FROM posts WHERE author in
-            (SELECT sub FROM user_subs WHERE username=${ username }) AND tm > ${lastupdate}
-            ORDER BY tm DESC LIMIT ${ messagesLimit }`;
+        const messageFeed = await db.sql`WITH cte AS (SELECT a.author, a.tm, sum(score) AS score, a.body FROM posts a 
+          LEFT JOIN votesposts b ON a.author=b.author AND a.tm=b.tm 
+          WHERE a.author IN (select sub FROM usersubs WHERE username=${username}) 
+          AND a.tm > to_timestamp(${lastupdate/1000})
+          GROUP BY a.author, a.tm, a.body ORDER BY a.tm DESC LIMIT ${messagesLimit}) 
+        SELECT a.author, 1000*extract(epoch from a.tm) as tm, a.body, a.score, count(*) AS numreplies 
+        FROM cte a 
+        LEFT JOIN replies b 
+        ON a.author=b.replyauthor AND a.tm=b.replytm 
+        GROUP BY a.author, a.tm, a.body, a.score`;
         if (returnHTML) {
             var feed = "";
         } else {
             var feed = [];
         }
         tm = Date.now();
-        
+        console.log("messageFeed.length= ", messageFeed.length);
         const f = async () => {
-            for (m in messages) {
+            for (m of messageFeed) {
                 // console.log(m);
-                replies = await db.sql`SELECT author, trunc(1000*extract(epoch from tm)) as tm, body 
+                /*
+                replies = await db.sql`SELECT author, tm, body 
                 FROM replies WHERE replyto=${ m.author } AND replytotm=to_timestamp(${ m.tm })
                 ORDER BY tm DESC`;
+                */
+                replies = [];
                 if (returnHTML) {
                     feed += renderMessage(m, replies); 
                 } else {
-                    /*m.replies = [];
-                    replies.forEach( (r) => {
-                        m.replies.push(r);
-                    });*/
                     m.replies = replies;
                     feed.push(m); 
                 }
@@ -212,12 +219,14 @@ app.get('/feed', verifyToken, async (req, res) => {
     }
 });
 
+// get list of users to which user is not subscribed
 app.get('/users', verifyToken, async (req, res) => {
     const returnHTML = false;
+    const userLimit = 30;
     console.log("/users");
     try {
-        const users = await db.sql`select username from users where username!=${req.username}
-        and username not in (select sub from user_subs where username=${req.username})`;
+        const users = await db.sql`SELECT username FROM users WHERE username!=${req.username}
+        AND username NOT IN (SELECT sub FROM usersubs WHERE username=${req.username}) LIMIT ${userLimit}`;
         if (returnHTML) {
             userList = '<ul class="list-group">'
             users.forEach((u) => { 
@@ -236,34 +245,50 @@ app.get('/users', verifyToken, async (req, res) => {
     }
 });
 
-app.post('/vote/:author/:tm/:updown', verifyToken, async (req, res) => {
+app.post('/vote/:author/:tm', verifyToken, async (req, res) => {
     const username = req.username;
     const author = req.params.author;
-    const tm = req.params.tm;
-    const updown = req.params.updown;
+    const updown = req.query.updown;
+    const isreply = req.query.isreply;    
     console.log(`${username} /vote/${author}/${tm}/${updown}`);
 
     if (!updown) {
-        return res.status(400).json({ message: 'Up/down is required' });
+        return res.status(400).json({ message: 'updown is required' });
+    }
+    if (!isreply) {
+        return res.status(400).json({ message: 'isreply required' });
     }
     
-    if (updown == "up") {
+    if (isreply === "true") {
+        isreply = true;
+    } else if (isreply != "false") {
+        return res.status(400).json({ message: "'isreply' can only be 'true' or 'false'"});
+    }
+    isreply = false;
+    let score = 0;
+    if (updown === "up") {
         score = 1;
-    } else if (updown == "down") {
+    } else if (updown === "down") {
         score = -1;
     } else {
         return res.status(400).json({ message: "Up/down needs to be only 'up' or 'down'"});
     }
     
+    let tm = 0;
     try { 
         tm = Number(req.params.tm);
     } catch(e) { 
-        return res.status(400).json({ message: "Up/down needs to be only 'up' or 'down'"}); 
+        return res.status(400).json({ message: `Could not convert tm ${tm} to number`}); 
     }
     // const vote = { author:author, tm:tm, username:username, score:score };
     try {
-        await db.sql`insert into votes (author, tm, username, score)
-            values(${author}, to_timestamp(${tm}), ${username}, ${score})`;
+        if (isreply) {
+            await db.sql`INSERT INTO votesposts (author, tm, username, score)
+                VALUES(${author}, to_timestamp(${tm/1000}), ${username}, ${score})`;
+        } else {
+            await db.sql`INSERT INTO votesreplies (author, tm, username, score)
+                VALUES(${author}, to_timestamp(${tm/1000}), ${username}, ${score})`;
+        }
     } catch(e) {
         console.log("/vote error ", e)
         return res.status(500).json(e);
@@ -275,32 +300,40 @@ app.post('/vote/:author/:tm/:updown', verifyToken, async (req, res) => {
 app.post('/replyto', verifyToken, async (req, res) => {
     const username = req.username;
     console.log('/replyto req.params= ', req.params, 'req.query= ', req.query, ' req.body= ', req.body);
-    const replyto = req.body.replyto;
-    const replytotm = req.body.replytotm;
-    const text = req.body.replytobody;
+    const origauthor = req.body.origauthor;
+    const origtm = req.body.origtm;
+    const replyauthor = req.body.replyauthor;
+    const replytm = req.body.replytm;
+    const msgbody = req.body.msgbody;
     const returnHTML = false;
 
-    if (!text) {
-        return res.status(400).json({ message: "'replytobody' is required"});
+    if (!msgbody) {
+        return res.status(400).json({ message: "'msgbody' is required"});
     }
-    if (!replyto || !replytotm) {
+    if (!replyauthor || !replytm) {
         return res.status(400).json({ message: "Invalid 'replyto' or 'replytotm'"});
     }
+    if (!origauthor || !origtm) {
+        return res.status(400).json({ message: "Invalid 'origauthor' or 'origtm'"});
+    }
     
-    let replytotmNum = 0;
     try {
-        replytotmNum = Number(replytotm);
+        replytm = Number(replytm);
+        origtm = Number(origtm);
     } catch(e) {
-        return res.status(400).json({ message: `Bad 'replytotm' ${replytotm} could not convert to integer`});
+        return res.status(400).json({ message: `Bad 'replytm' or 'origtm' ${replytm} ${origtm} could not convert to integer`});
     }
     tm = Date.now()
     console.log(`tm=${tm}`);
     
-    const message = { author:username, tm:tm, replyto:replyto, replytotm:replytotmNum, body:text };
+    const message = { author:username, tm:tm, body:msgbody, 
+        origauthor:origauthor, origtm:origtm, 
+        replyauthor:replyauthor, replytm:replytm};
     console.log("message= ", message);
     try {
-        await db.sql`insert into replies (author, tm, replyto, replytotm, body)
-            values(${username}, to_timestamp(${tm}), ${replyto}, to_timestamp(${replytotm}), ${text})`
+        await db.sql`INSERT INTO replies (author, tm, body, origauthor, origtm, replyauthor, replytm)
+            VALUES(${username}, to_timestamp(${tm/1000}), ${msgbody}, ${origauthor}, ${origtm/1000}, 
+            ${replyauthor}, to_timestamp(${replytm/1000}))`
     } catch(e) {
         console.log("/reply error ", e)
         return res.status(500).json(e);
@@ -313,9 +346,6 @@ app.post('/replyto', verifyToken, async (req, res) => {
     return res.status(201).json(message);
 });
 
-app.get('/replyto', verifyToken, async (req, res) => {
-
-});
 
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);

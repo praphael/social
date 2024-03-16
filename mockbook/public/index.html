@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mockbook</title>
-    <link rel="stylesheet" href="bootstrap.css">
+    <link rel="stylesheet" href="bootstrap.min.css">
 </head>
 <body>
     <script src="bootstrap.bundle.js"></script>
@@ -83,9 +83,11 @@
         </div>
         <div class="row">
             <div class="col-3">
+            <!---  users -->
             <div class="container" id="users">Users list</div> <!--- style="background-color: azure" --->
             </div>
             <div class="col-9">
+            <!---  feed -->
             <div class="container" id="feed">Feed area</div>  <!--- style="background-color: rgb(122, 122, 118)"  --->
             </div>
         </div>
@@ -122,7 +124,10 @@
         appState = { token : "", lastupdate : 0 }; 
         appState.token = sessionStorage.getItem("token");
         appState.feed = [];
+        appState.feedMap = new Map();
+        appState.newMessages = [];
         appState.userList = [];
+        appState.firstRender = true;
 
         if (appState.token) {
             changeState("feed");
@@ -154,8 +159,9 @@
                     appState.token = j.token;
                     changeState("feed");
                 } else {
-                    const errorMessage = await response.text();
-                    alert(`Error: ${errorMessage}`);
+                    const errorMessage = await response.json();
+                    console.log(errorMessage);
+                    // alert(`Error: ${errorMessage}`);
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -166,7 +172,10 @@
             appState.token = "";
             appState.lastupdate = 0;
             appState.feed = [];
+            appState.feedMap = new Map();
             appState.userList = [];
+            appState.newMessages = [];
+            appState.firstRender = true;
             sessionStorage.clear();
             changeState("login");
         }
@@ -274,7 +283,8 @@
         }
 
         function renderMessage(m) {
-            let x = `<div class="mb-3 mt-3 row container"><div class="row"><div class="col"><h5>${m.author}</h5></div>`;
+            const id = `${m.author}${m.tm}`;
+            let x = `<div id="${id}" class="mb-3 mt-3 row container"><div class="row"><div class="col"><h5>${m.author}</h5></div>`;
             x += `<div class="col">${formatTimestamp(m.tm)}</div></div>`;
             x += `<div class="row"><div class="col-auto mb-3 mt-3">${m.body}</div></div>`;
             x += '<div class="row">';
@@ -292,10 +302,46 @@
         
         async function renderFeed() {
             feedHTML = "";
-            appState.feed.forEach((m) => { 
-                feedHTML += renderMessage(m)
-            });
-            document.getElementById("feed").innerHTML = feedHTML;
+            if (!appState.firstRender)
+                feedHTML = document.getElementById("feed").innerHTML;
+            while(appState.newMessages.length > 0) {
+                m = appState.newMessages.pop();
+                feedHTML += renderMessage(m);
+                m.needsRender = false;
+            }            
+            appState.firstRender = false;
+            document.getElementById("feed").innerHTML += feedHTML;
+        }
+
+        function updateMessage(oldMsg, newMsg) {
+            console.log("updateMessage oldMsg=", oldMsg, "newMsg=", newMsg);
+            if (newMsg.hasOwnProperty("body") && oldMsg.body != newMsg.body) {
+                m.needsRender = true;
+                oldMsg.body = newMsg.body;
+            }
+            if (newMsg.hasOwnProperty("score") && oldMsg.score != newMsg.score) {
+                m.needsRender = true;
+                oldMsg.score = newMsg.score;
+            }
+            if (newMsg.hasOwnProperty("numreplies") && oldMsg.body != newMsg.score) {
+                m.needsRender = true;
+                oldMsg.numreplies = newMsg.numreplies;
+            }
+        }
+
+        function mergeFeed(messages) {
+            for (m of messages) {
+                key = m.author + m.tm;
+                if (appState.feedMap.has(key)) {
+                    idx = appState.feedMap.get(key);
+                    console.log("mergeFeed idx=", idx);
+                    updateMessage(appState.feed[idx], m);
+                } else {
+                    appState.feedMap.set(key, appState.feed.push(m) - 1);
+                    m.needsRender = true;
+                    appState.newMessages.push(m);
+                }                
+            }
         }
 
         async function getFeed() {
@@ -313,11 +359,11 @@
                 if (response.ok) {
                     console.log("getFeed response OK")
                     const j = await response.json();
-                    appState.feed = j.concat(feed);
+                    mergeFeed(j);
                     await renderFeed();
                 } else {
-                    const errorMessage = await response.text();
-                    alert(`Error: ${errorMessage}`);
+                    const errorMessage = await response.json();
+                    console.log(errorMessage);
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -326,6 +372,16 @@
             setTimeout("getFeed()", 3000);
         }
 
+        async function renderUserList() {
+            html = '<ul class="list-group">';
+            for (u of appState.userList) {
+                html += `<li class="list-group-item container"><span class="col-auto me-3">${u.username}</span>`; 
+                html += `<button class="btn btn-secondary col-auto" click="subscribe(${u.username})">sub</button>`;
+                html += '</li>';
+            }
+            html += "</ul>";
+            document.getElementById("users").innerHTML = html;
+        }
         async function getUserList() {
             console.log("getUsers");
 

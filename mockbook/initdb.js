@@ -18,14 +18,16 @@ const populate = true;
 const numUsers = 26*26*5;
 const votesPerPostRange = [0, 20];
 const postsPerUserRange = [0, 50];
-const subsPerUserRange = [1, 20];
+const subsPerUserRange = [1, 300];
 // replies per post at different reply depths
 const repliesPerPostRanges = [[0,6], [0,3], [0,2], [0,2]];
-const startTime = Date.now();
+const startTime = Date.now()/1000;
 let insertCnt = 0;
 let failedInsertCnt = 0;
 function getRandomInt(rng) {
-    return rng[0] + Math.floor(Math.random() * rng[1]);
+    r = rng[0] + Math.floor(Math.random() * rng[1]);
+    // console.log(`getRandomInt rng=[${rng[0]} ${rng[1]}] r= ${r}`)
+    return r;
 }
 
 // random time delta in milliseconds
@@ -33,7 +35,7 @@ function getRandomTimeDelta(minHours=1, maxHours=24) {
     hrs = getRandomInt([minHours, maxHours])
     mins = getRandomInt([0, 60]);
     secs = getRandomInt([0, 60]);
-    return 1000*(hrs*60*60 + mins*60 + secs);
+    return hrs*60*60 + mins*60 + secs;
 }
 
 const popDB = async ()=>{
@@ -68,7 +70,7 @@ const popDB = async ()=>{
     const createUsers = async () => {
         for(const u of userNames) {
             const newuser = { username:u, passhash:sha256(u), isregistered:true };
-            console.log(`createUser u=${u}`)
+            // console.log(`createUser u=${u}`)
             const r = await db.sql`insert into users
                 ${db.sql(newuser, 'username', 'passhash', 'isregistered')}`;
             // console.log(`createdUser u=${u}`)
@@ -84,20 +86,33 @@ const popDB = async ()=>{
             let subs = new Set();
             for(let j=0; j<numSubs; j++) {
                 subi = ui;
-                while(subi == ui && subs.has(subi)) {
-                    subi = getRandomInt([0, numUsers]);                    
+                while(subi == ui || subs.has(subi)) {
+                    subi = getRandomInt([0, numUsers]);
                 }
                 subs.add(subi);
                 sub = userNames[subi];
+                // console.log(`subi=${subi} sub=${sub}`);
                 // console.log(`  subi=${subi} sub=${sub}`);
                 await db.sql`insert into usersubs (username, sub)
                     values(${u}, ${sub})`;
                 insertCnt++;
             }
-            // console.log(`createdSubs u=${u} numSubs=${numSubs}`);
+            console.log(`createdSubs u=${u} numSubs=${numSubs}`);
             subsArr.push(subs);
+            ui += 1;
         }
-        ui += 1;
+        /*
+        ui = 0;
+        subsArr.forEach((a) => {
+            subs = subsArr[ui];
+            process.stdout.write(`subsArr[${ui}]= `);
+            subs.forEach((s) => {
+                process.stdout.write(" " + s);
+            })
+            console.log("");  
+            ui++;          
+        }); 
+        */
     };
 
     const createVotes = async (i, author, tm, isReply) => {
@@ -147,19 +162,25 @@ const popDB = async ()=>{
             for(let r=0; r<numReplies; r++) {
                 // reply from random subscriber
                 const subs = subsArr[i];
-                let author = undefined;
-                while(author === undefined) {
-                    const si = getRandomInt([0, subs.size-1]);
-                    const subsiter = subs.values();
-                    for(let k=0; k<si; k++)
-                        subsiter.next();
-                    author = userNames[subsiter.next().value];
-                    // console.log(`author=${author}`);
+                let si = getRandomInt([0, subs.size]);
+                const si_init = si;
+                const subsiter = subs.values();
+                while(si > 0) {
+                    subsiter.next();
+                    si--;
+                }
+                const author = userNames[subsiter.next().value];
+                if (author === undefined) {
+                    console.log("author is undefined!");
+                    continue;
+                }
+                else if (author == "alpha") {
+                    console.log(`author is 'alpha' si_init=${si_init}`);
                 }
                 
                 // ensure the post is after previous, but not more recent 
                 // than start time 
-                let endHrs = (startTime-replytm)/(3600*1000);
+                let endHrs = (startTime-replytm)/3600;
                 endHrs = Math.min(endHrs, 1);
                 const tm = replytm + getRandomTimeDelta(0, endHrs);
                 
@@ -272,7 +293,7 @@ const initDB = async (reInit, populate)=>{
         await popDB();
     }
     console.log("initDB() done");
-    dt =  (Date.now() - startTime)/1000;
+    dt = Date.now()/1000 - startTime;
     console.log(`timeElasped= ${dt} sec insertCnt= ${insertCnt} failedInsertCnt=${failedInsertCnt}`)
     console.log(`inserts/sec= ${insertCnt/dt}`)
     db.sql.end();
