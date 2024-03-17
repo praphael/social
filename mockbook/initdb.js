@@ -15,10 +15,10 @@ const userNameBase = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
 
 const reInitialize = true;
 const populate = true;
-const numUsers = 26*26*5;
+const numUsers = 26;
 const votesPerPostRange = [0, 20];
 const postsPerUserRange = [0, 50];
-const subsPerUserRange = [1, 300];
+const subsPerUserRange = [1, 10];
 // replies per post at different reply depths
 const repliesPerPostRanges = [[0,6], [0,3], [0,2], [0,2]];
 const startTime = Date.now()/1000;
@@ -69,10 +69,12 @@ const popDB = async ()=>{
     // create users
     const createUsers = async () => {
         for(const u of userNames) {
-            const newuser = { username:u, passhash:sha256(u), isregistered:true };
+            const pwd = u+"#1"+u;
+            const newuser = { username:u, passhash:sha256(pwd), email:u+"@foo.com", 
+                regipaddr:'::1', isregistered:true };
             // console.log(`createUser u=${u}`)
             const r = await db.sql`insert into users
-                ${db.sql(newuser, 'username', 'passhash', 'isregistered')}`;
+                ${db.sql(newuser, 'username', 'passhash', 'email', 'regipaddr', 'isregistered')}`;
             // console.log(`createdUser u=${u}`)
             insertCnt++;
         }
@@ -174,9 +176,6 @@ const popDB = async ()=>{
                     console.log("author is undefined!");
                     continue;
                 }
-                else if (author == "alpha") {
-                    console.log(`author is 'alpha' si_init=${si_init}`);
-                }
                 
                 // ensure the post is after previous, but not more recent 
                 // than start time 
@@ -189,15 +188,14 @@ const popDB = async ()=>{
                 // console.log(`createReplies r=${r} author=${author} tm=${tm} body=${body}`)
                 try {
                     await db.sql`insert into replies (author, tm, origauthor, origtm, 
-                        replyauthor, replytm, body) 
+                        replyauthor, replytm, body, ipaddr) 
                         values(${author}, to_timestamp(${tm}), ${origauthor}, to_timestamp(${origtm}), 
-                        ${replyauthor}, to_timestamp(${replytm}), ${body})`;
+                        ${replyauthor}, to_timestamp(${replytm}), ${body}, '::1')`;
                     insertCnt++;
                 } catch(e) {
                     console.log(`FAILED createReplies lvl=${lvl} r=${r} author=${author} tm=${tm} origauthor=${origauthor} replyauthor=${replyauthor} body=${body}`);
                     failedInsertCnt++;
                     // throw e;
-                    // console.log(e);
                 }
 
                 // vote on reply    
@@ -221,14 +219,13 @@ const popDB = async ()=>{
                 const tm = startTime - getRandomTimeDelta(1, 24*30);
                 // console.log(`createPostsRepliesVotes u=${u} ui=${ui} p=${p}`);
                 try {
-                    await db.sql`insert into posts (author, tm, body)
-                        values(${u}, to_timestamp(${tm}), ${body})`;
+                    await db.sql`insert into posts (author, tm, body, ipaddr)
+                        values(${u}, to_timestamp(${tm}), ${body}, '::1')`;
                     insertCnt++;
                 } catch(e) {
                     console.log(`FAILED createPostsRepliesVotes u=${u} ui=${ui} p=${p}`);
                     failedInsertCnt++;
                     // throw e;
-                    // console.log(e);
                 }
                 
                 // console.log(`createPostsRepliesVotes u=${u} ui=${ui} p=${p} SQL insert done`);
@@ -258,32 +255,50 @@ const initDB = async (reInit, populate)=>{
         await db.sql`DROP TABLE IF EXISTS replies`;
         await db.sql`DROP TABLE IF EXISTS posts`;
         await db.sql`DROP TABLE IF EXISTS usersubs`;
-        await db.sql`DROP TABLE IF EXISTS users`;        
+        await db.sql`DROP TABLE IF EXISTS logins`;
+        await db.sql`DROP TABLE IF EXISTS users`;
+        await db.sql`DROP DOMAIN IF EXISTS username_t`;
+        await db.sql`DROP DOMAIN IF EXISTS email_t`;
+        await db.sql`DROP DOMAIN IF EXISTS auth2fa_t`;
     }
-    await db.sql`CREATE TABLE IF NOT EXISTS users(username varchar(32) PRIMARY KEY, passhash varchar(64),
-            isRegistered boolean)`;
-    await db.sql`CREATE TABLE IF NOT EXISTS posts(author varchar(32) REFERENCES users(username), 
+    await db.sql`CREATE DOMAIN username_t AS varchar(32)`;
+    await db.sql`CREATE DOMAIN email_t AS varchar(128)`;
+    await db.sql`CREATE DOMAIN auth2fa_t AS varchar(128)`;
+    await db.sql`CREATE TABLE IF NOT EXISTS users(username username_t PRIMARY KEY, 
+            passhash varchar(64),
+            email email_t, 
+            regipaddr inet,
+            regtm timestamptz DEFAULT NOW(),
+            auth2fa auth2fa_t DEFAULT NULL,
+            isregistered boolean DEFAULT false)`;
+    await db.sql`CREATE TABLE IF NOT EXISTS logins(username username_t REFERENCES users(username),
+            tm timestamptz DEFAULT NOW(),
+            ipaddr inet NOT NULL,
+            PRIMARY KEY(username, tm))`;
+    await db.sql`CREATE TABLE IF NOT EXISTS posts(author username_t REFERENCES users(username), 
             tm timestamptz NOT NULL, 
             body text NOT NULL, 
+            ipaddr inet NOT NULL,
             PRIMARY KEY(author, tm))`;
     // NOTE: replyauthor and replytm should internally reference replies(author, tm),
     // or be the same as origauthor, origtm
-    await db.sql`CREATE TABLE IF NOT EXISTS replies(author varchar(32), 
+    await db.sql`CREATE TABLE IF NOT EXISTS replies(author username_t, 
             tm timestamptz, body text NOT NULL,
-            origauthor varchar(32), origtm timestamptz,
-            replyauthor varchar(32), replytm timestamptz, 
+            origauthor username_t, origtm timestamptz,
+            replyauthor username_t, replytm timestamptz, 
+            ipaddr inet NOT NULL,
             PRIMARY KEY(author, tm), 
             FOREIGN KEY(origauthor, origtm) REFERENCES posts(author, tm))`;
-    await db.sql`CREATE TABLE IF NOT EXISTS usersubs(username varchar(32) REFERENCES users(username), 
-            sub varchar(32) REFERENCES users(username))`;
+    await db.sql`CREATE TABLE IF NOT EXISTS usersubs(username username_t REFERENCES users(username), 
+            sub username_t REFERENCES users(username))`;
     // votes on original posts
-    await db.sql`CREATE TABLE IF NOT EXISTS votesposts(author varchar(32), tm timestamptz, 
-            voter varchar(32) REFERENCES users(username), score smallint,
+    await db.sql`CREATE TABLE IF NOT EXISTS votesposts(author username_t, tm timestamptz, 
+            voter username_t REFERENCES users(username), score smallint,
             PRIMARY KEY(author, tm, voter),
             FOREIGN KEY(author, tm) REFERENCES posts(author,tm))`;
     // votes on replies
-    await db.sql`CREATE TABLE IF NOT EXISTS votesreplies(author varchar(32), tm timestamptz, 
-            voter varchar(32) REFERENCES users(username),
+    await db.sql`CREATE TABLE IF NOT EXISTS votesreplies(author username_t, tm timestamptz, 
+            voter username_t REFERENCES users(username),
             PRIMARY KEY(author, tm, voter), score smallint,
             FOREIGN KEY(author, tm) REFERENCES replies(author,tm))`;
     

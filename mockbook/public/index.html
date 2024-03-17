@@ -26,12 +26,12 @@
                 <span class="col-lg-6"></span>
             </div>  
             <div class="row mb-3">
-                <button class="col-md-4 btn btn-primary" onclick="login()">Login</button>
+                <button class="col-md-4 btn btn-primary" type="button" onclick="login()">Login</button>
                 <span class="col-lg-6"></span>
             </div>
             <div class="row mt-3">
                 <span class="col-sm-4 me-1 mb-1">New User?</span>
-                <button class="col-sm-4 btn btn-link" onclick="changeState('register')">Register</button>
+                <button class="col-sm-4 btn btn-link" type="button" onclick="changeState('register')">Register</button>
                 <span class="col-lg-6"></span>
             </div>
             <div id="loginresp" hidden></div>
@@ -47,7 +47,11 @@
                 <input class="form-control" type="text" id="newusername" name="newusername">
             </div>
             <div class="row mb-3">
-                <label class="form-label" for="password">New Password:</label>
+                <label class="form-label" for="username">Email address:</label>
+                <input class="form-control" type="text" id="newuseremail" name="newuseremail">
+            </div>
+            <div class="row mb-3">
+                <label class="form-label" for="password">Desired Password:</label>
                 <input class="form-control" type="password" id="newpassword" name="newpassword">
             </div>
             <div class="row mb-3">
@@ -70,11 +74,12 @@
 
     <div id="feedDiv" class="container"> <!--- style="background-color: lightcoral"> -->
         <!--- Post area --->
-        <div class="row">
+        <div class="row mb-3">
             <form id="post" class="col-10">
-            <div class="container"><div class="row"> <!--- style="background-color: aquamarine" --->
+            <div class="container-fluid"><div class="row"> <!--- style="background-color: aquamarine" --->
                 <div class="col-auto"><label class="form-label" for="text">Say something:</label></div>
-                <div class="col-8"><input class="form-control" type="text" id="newPostText"></div>
+                <div class="col-8"><input class="form-control" type="text" id="newPostText">
+                </div>
                 <!--- <div id="postresp" name="postresp" hidden></div> --->
                 <div class="col-auto"><button class="col-auto btn btn-primary" onclick="postNew()" type="button">Post</button></div>
             </div></div>
@@ -82,13 +87,13 @@
             <div class="col-2"><button class="btn btn-secondary" onclick="logout()">Logout</button></div>
         </div>
         <div class="row">
-            <div class="col-3">
+            <div class="col-2 me-2">
             <!---  users -->
-            <div class="container" id="users">Users list</div> <!--- style="background-color: azure" --->
+            <div class="container-fluid" id="users">Users list</div> <!--- style="background-color: azure" --->
             </div>
             <div class="col-9">
             <!---  feed -->
-            <div class="container" id="feed">Feed area</div>  <!--- style="background-color: rgb(122, 122, 118)"  --->
+            <div class="container-fluid" id="feed">Feed area</div>  <!--- style="background-color: rgb(122, 122, 118)"  --->
             </div>
         </div>
     </div>
@@ -127,6 +132,7 @@
         appState.feedMap = new Map();
         appState.newMessages = [];
         appState.userList = [];
+        appState.username = null;
         appState.firstRender = true;
 
         if (appState.token) {
@@ -134,8 +140,17 @@
         } else {
             changeState("login");
         }
+
+        
+        document.getElementById("loginpassword").addEventListener('keydown', async (e) => {
+            console.log("loginpassword: ", e.code);
+        });
+        document.getElementById("newPostText").addEventListener('keydown', async (e) => {
+            console.log("newPostText: ", e.code);
+        });
         
         async function login() {
+            console.log("login");
             const userData = {
                 username: document.getElementById("loginusername").value,
                 password: document.getElementById("loginpassword").value
@@ -153,15 +168,17 @@
                 });
 
                 if (response.ok) {
+                    console.log(`login response ok`);
                     const j = await response.json();
                     console.log(`successful login token=${j.token}`);
-                    sessionStorage.setItem("token", j.token)
+                    sessionStorage.setItem("token", j.token);
+                    appState.username = userData.username;
                     appState.token = j.token;
                     changeState("feed");
                 } else {
-                    const errorMessage = await response.json();
+                    const errorMessage = await response.text();
                     console.log(errorMessage);
-                    // alert(`Error: ${errorMessage}`);
+                    alert(`Error: ${errorMessage}`);
                 }
             } catch (error) {
                 console.error('Error:', error);
@@ -176,60 +193,74 @@
             appState.userList = [];
             appState.newMessages = [];
             appState.firstRender = true;
+            appState.username = null;
             sessionStorage.clear();
             changeState("login");
         }
 
-        async function reply(e, author, tm) {
-            html = e.outerHTML;
-            formName = `replyform${author}${tm}`
+        async function postReply(author, tm, origauthor, origtm) {
+            const replyToData = {
+                origauthor: origauthor,
+                origtm: origtm,
+                replyauthor: author,
+                replytm: tm,
+                msgbody: document.getElementById(`${formName}body`).value
+            };
 
-            html += `<form name="${formName}" id="${formName}">`;
-            html += `<label>Reply: </label><input id="${formName}replytobody">`;
-            html += `<button type="submit" class="btn btn-primary">Post</button>`;
-            html += `<button type="button" class="btn btn-secondary" onclick="cancelReply(this,'${formName}')">Cancel</button>`;
-            html += '<div id="replyresponse"></div>';
-            html += '</form>';
-            e.outerHTML = html;
-            
-            document.getElementById(formName).addEventListener('submit', async function(event) {
-                event.preventDefault();
+            try {
+                const response = await fetch('/reply', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization' : appState.token
+                    },
+                    body: JSON.stringify(replyToData)
+                });
 
-                const replyToData = {
-                    replyto: author,
-                    replytotm: tm,
-                    replytobody: document.getElementById(`${formName}replytobody`).value
-                };
-
-                try {
-                    const response = await fetch('/replyto', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization' : appState.token
-                        },
-                        body: JSON.stringify(replyToData)
-                    });
-
-                    if (response.ok) {
-                        frm = document.getElementById(formName);
-                        frm.outerHTML += response.body;
-                        cancelReply(e, formName);
-                    } else {
-                        const errorMessage = await response.text();
-                        alert(`Error: ${errorMessage}`);
-                    }
-                } catch (error) {
-                    console.error('Error:', error);
+                if (response.ok) {
+                    const j = await response.json();
+                    console.log("response ", j);
+                    cancelReply(formName);
+                } else {
+                    const errorMessage = await response.text();
+                    console.log(errorMessage);
+                    alert(`Error: ${errorMessage}`);
                 }
-            });
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function reply(author, tm, origauthor, origtm) {
+            divName = `replydiv${author}${tm}`;
+            div = document.getElementById(divName);
+            if (!(div === null || div === undefined)) {
+                console.log(`cancelling reply ${divName}`);
+                cancelReply(divName);
+                return;
+            }
+            rowDivName = `replyrow${author}${tm}`;
+            rowDiv = document.getElementById(rowDivName);
+            console.log(`reply() rowDivName=${rowDivName} rowDiv=${rowDiv}`);
+            formName = `replyform${author}${tm}`;
+            html = `<div id="${divName}" class="col">`;
+            html += `<div class="col-10"><form class="container-fluid" name="${formName}" id="${formName}">`;
+            html += '<div class="row">';
+            // html += `<label class="col-1 form-label">Reply:</label>
+            html += `<input class="ms-2 col-6 form-control" id="${formName}body">`;
+            html += '</div>';
+            html += `<div class="row"><button type="button" onclick="postReply('${author}', ${tm}, '${origauthor}', ${origtm})" class="col-3 btn btn-sm btn-primary">Post</button>`;
+            html += `<button type="button" class="col-3 btn btn-sm btn-secondary" onclick="cancelReply('${divName}')">Cancel</button></div>`;
+            html += '<div id="replyresponse"></div>';
+            html += '</form></div></div>';
+            rowDiv.innerHTML = html;            
         }
         
 
-        function cancelReply(e, formName) {
-            console.log("cancelReply formName='", formName);
-            form = document.getElementById(formName);
-            form.remove();
+        function cancelReply(divName) {
+            console.log("cancelReply divName='", divName);
+            div = document.getElementById(divName);
+            div.remove();
         }
 
         async function postNew() {
@@ -238,19 +269,26 @@
                 const response = await fetch('/messages', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'text/plain',
                         'Authorization' : appState.token
                     },
                     body: text
                 });
 
                 if (response.ok) {
-                    const j = await response.json();
-                    // insert the post into the feed
-                    feed = [j].concat(feed);
+                    console.log("postNew reponse OK");
+                    const resp = await response.json();
+                    console.log("postNew server response", resp);
+                    msg = { author:appState.username, tm:resp.tm, body:text, numreplies:0};
+                    mergeFeed([msg]);
                     await renderFeed();
+                    
+                    // insert the post into the feed
+                    // feed = [j].concat(feed);
+                    // await renderFeed();
                 } else {
                     const errorMessage = await response.text();
+                    console.log(errorMessage);
                     alert(`Error: ${errorMessage}`);
                 }
             } catch (error) {
@@ -282,18 +320,35 @@
             }   
         }
 
-        function renderMessage(m) {
+        function renderMessage(m, origauthor, origtm) {
             const id = `${m.author}${m.tm}`;
-            let x = `<div id="${id}" class="mb-3 mt-3 row container"><div class="row"><div class="col"><h5>${m.author}</h5></div>`;
-            x += `<div class="col">${formatTimestamp(m.tm)}</div></div>`;
-            x += `<div class="row"><div class="col-auto mb-3 mt-3">${m.body}</div></div>`;
+            let x = `<div id="${id}" class="mb-3 mt-3 row container">`;
+            x += `<div class="row">`;
+            x += `  <span class="col"><h5>${m.author}</h5></span>`;
+            x += `  <span class="col">${formatTimestamp(m.tm)}</span>`;
+            x += `</div>`;
             x += '<div class="row">';
-            x += `<div class="col-2"><button type="button" class="btn btn-outline-info" onclick="reply(this, '${m.author}', ${m.tm})">Reply</button></div>`;
-            x += `<div class="col-2"><div class="container-fluid"><button type="button" class="btn btn-outline-success">^</button>`;
-            x += `<button type="button" class="btn btn-outline-danger">v</button></div>`;
+            x += `  <div class="col-auto mb-3 mt-3">${m.body}</div>`;
+            x += '</div>';
+            x += `<div class="row justify-content-between">`;
+            // reply button
+            x += `  <span class="col-2"><button type="button" class="btn btn-outline-info" data-bs-toggle="button"`;
+            x += `       onclick="reply('${m.author}', ${m.tm}, '${origauthor}', ${origtm})">Reply</button></span>`;
+            // vote buttons 
+            x += '  <span class="col-2">'; 
+            x += `     <span class="container-fluid"><button type="button" class="btn btn-outline-success">^</button>`;
+            x += '          <button type="button" class="btn btn-outline-danger">v</button>';
+            x += '     </span>';
+            x += '  </span>';
+            x += '</div>';
+            x += `<div class="row" id="replyrow${m.author}${m.tm}"></div>`;
+            x += '<div class="row mt-2">';
+            x += `<span class="col-2">${m.numreplies} replies</span>`;
+            x += `<span class="col-2"><button class="btn btn-sm btn-outline-light" data-bs-toggle="button">Show</button></span>`;
+            x += '</div>';
             if (!m.replies === undefined && !m.replies == null && m.replies.length > 0) {
                 replies.forEach( (r) => {
-                    x += renderMessage(r,[]);
+                    x += renderMessage(r, origauthor, origtm);
                 });
             }
             x += '</div></div>';
@@ -301,16 +356,18 @@
         }
         
         async function renderFeed() {
+            console.log("renderFeed new messages=", appState.newMessages.length);
             feedHTML = "";
-            if (!appState.firstRender)
-                feedHTML = document.getElementById("feed").innerHTML;
             while(appState.newMessages.length > 0) {
                 m = appState.newMessages.pop();
-                feedHTML += renderMessage(m);
+                feedHTML += renderMessage(m, m.author, m.tm);
                 m.needsRender = false;
             }            
+            // prepend
+            if (!appState.firstRender)
+                feedHTML += document.getElementById("feed").innerHTML;
             appState.firstRender = false;
-            document.getElementById("feed").innerHTML += feedHTML;
+            document.getElementById("feed").innerHTML = feedHTML;
         }
 
         function updateMessage(oldMsg, newMsg) {
@@ -359,27 +416,33 @@
                 if (response.ok) {
                     console.log("getFeed response OK")
                     const j = await response.json();
-                    mergeFeed(j);
+                    mergeFeed(j.feed);
                     await renderFeed();
+                    appState.lastupdate = j.lastupdate;
                 } else {
-                    const errorMessage = await response.json();
+                    const errorMessage = await response.text();
                     console.log(errorMessage);
                 }
             } catch (error) {
                 console.error('Error:', error);
             }
 
-            setTimeout("getFeed()", 3000);
+            setTimeout("getFeed()", 10000);
         }
 
         async function renderUserList() {
-            html = '<ul class="list-group">';
-            for (u of appState.userList) {
-                html += `<li class="list-group-item container"><span class="col-auto me-3">${u.username}</span>`; 
-                html += `<button class="btn btn-secondary col-auto" click="subscribe(${u.username})">sub</button>`;
-                html += '</li>';
+            // html = '<ul>'; //  class="list-group"
+            let html = '<div class="container-fluid">';
+            for (u of appState.userList) { // list-group-item
+                // html += `<li style="background-color: yellow" class=" container-fluid  justify-content-end" style="background-color: red">';
+                html += '<div class="row mb-3 justify-content-between border-top border-right">';
+                html += `<span class="col-1 border-left">${u.username}</span>`; 
+                html += `<span class="col-1"><button class="btn btn-secondary" click="subscribe(${u.username})">sub</button></span>`;
+                html += '</div>';
+                // html += '</li>';
             }
-            html += "</ul>";
+            html += "</div>";
+            // html += "</ul>";
             document.getElementById("users").innerHTML = html;
         }
         async function getUserList() {
@@ -401,13 +464,14 @@
                     await renderUserList();
                 } else {
                     const errorMessage = await response.text();
+                    console.log(errorMessage);
                     alert(`Error: ${errorMessage}`);
                 }
             } catch (error) {
                 console.error('Error:', error);
             }
 
-            setTimeout("getUserList()", 10000);
+            setTimeout("getUserList()", 30000);
         }
     </script>
 </body>

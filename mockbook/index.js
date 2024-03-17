@@ -3,107 +3,161 @@ const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const path = require('path'); // Require the path module
 const sha256 = require('js-sha256');
-
+const Parameter = require('parameter');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = 'your_jwt_secret';
-
 const db = require('./db.js');
 
 app.use(bodyParser.json());
+app.use(bodyParser.text());
 app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from the public directory
 
 startTime = Date.now();
+
+const paramValidator = new Parameter({
+    /*
+    translate: function() {
+      var args = Array.prototype.slice.call(arguments);
+      // Assume there have I18n.t method for convert language.
+      return I18n.t.apply(I18n, args);
+    }, */
+    validateRoot: true, // restrict the being validate value must be a object
+  });
+
+function validateParamsOrFail(params, rule, endpt, res) {
+    let errs = null;
+    try {
+        errs = paramValidator.validate(rule, params);
+    } catch(e) {
+        const msg = endpt + " exception during parameter validation: " + e;
+        console.log(JSON.stringify(params));
+        console.log(msg);
+        res.status(500).send(msg);
+        return false;
+    }
+    if(errs) {
+        const msg = endpt + " parameter validation failed: " + JSON.stringify(errs)
+        console.log(msg);
+        console.log(JSON.stringify(params));
+        res.status(400).send(msg);
+        return false;
+    }
+    return true;
+}
 
 // Middleware to verify JWT token
 const verifyToken = (req, res, next) => {
     const token = req.headers['authorization'];
     if (!token) {
         console.log(`verifyToken no token`);
-        return res.status(401).json({ message: 'Unauthorized: No token provided' });
+        return res.status(401).send('Unauthorized: No token provided');
     }
 
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
         if (err) {
             console.log(`verifyToken invalid token ${token}`);
-            return res.status(401).json({ message: 'Unauthorized: Invalid token' });
+            return res.status(401).send('Unauthorized: Invalid token');
         }
         req.username = decoded.id;
         next();
     });
 };
 
+const loginRule = {
+    username: 'string', 
+    password: 'password'
+}
 // Route for user login
 app.post('/login', async (req, res) => {
     const { username, password } = req.body;
-    if (!username || !password) {
-        return res.status(401).json({ message: 'Username/password missing from request' });
-    }
+    const ipaddr = req.ip;
+    if (!validateParamsOrFail({ username, password }, loginRule, "login", res)) 
+        return;
+    
     try {
         // const user = users.find(user => user.username === username && user.password === password);
         const users = await db.sql`select passhash from users where username=${ username }`;
         console.log("login users= " + users);
         if (users.length > 0 && (sha256(password) == users[0].passhash)) {
             const token = jwt.sign({ id: username }, JWT_SECRET, { expiresIn: '1h' });
-            console.log(`user ${username} logged in token= ${token}`);
-            return res.status(200).json({ token });
+            try {
+                const logininfo = { username:username, ipaddr:ipaddr };
+                await db.sql`INSERT INTO logins
+                    ${db.sql(logininfo, 'username', 'ipaddr')}`;
+                console.log(`user ${username} logged in token= ${token}`);
+                return res.status(200).json({ token });
+            } catch(e) {
+                const msg = "login failure: " + e;
+                console.log(msg);
+                return res.status(500).text(msg);
+            }
         } else {
             console.log("Invalid login from '" + username + "'");
-            return res.status(401).json({ message: 'Invalid username or password' });
+            return res.status(401).send('Invalid username or password');
         }
     } catch(e) {
         console.log("Error during login", e);
-        return res.status(500).json({ message: 'login Server error' });
+        return res.status(500).send('login error: ' + e);
     }
 });
 
+// Route for two factor auth
+app.post('/auth2fa', async (req, res) => {
+
+});
+
+const registerRule = {
+    username: 'string',
+    password: 'password',
+    password2: 'password',
+    email: 'email',
+    auth2fa : 'string'
+}
+// registration route
 app.post('/register', async (req, res) => {
-    console.log("register req.params= '", req.params, "'")
-    const { username, password } = req.body;
-    if (!username || !password) {
-        return res.status(401).json({ message: 'Username/password missing from request' });
+    console.log("register req.params= '" , req.params, "'")
+    const { username, password, password2, email, auth2fa } = req.body;
+    if (!validateParamsOrFail({ username, password, password2, email, auth2fa }, registerRule, "register", res))
+        return;
+    if(password != password2) {
+        return res.status(400).send('Passwords do not match');
     }
-    console.log(`username ${username} password ${password}`);
-    const tm = Date.now();
-    const newuser = { username:username, passhash:sha256(password) };
+    const ipaddr = req.ip;
+    const newuser = { username:username, passhash:sha256(password),
+                      email:email, ipaddr:ipaddr, auth2fa:auth2fa };
     try {
         await db.sql`INSERT INTO users
-            ${db.sql(newuser, 'username', 'passhash')}`;
+            ${db.sql(newuser, 'username', 'passhash', 'email', 'ipaddr', 'auth2fa')}`;
     } catch(e) {
         console.log("/register error ", e)
-        return res.status(500).json(e);
+        return res.status(500).send('SQL insert error: ' + e);
     }
-    return res.status(201).send("ok");
+    return res.status(201).send("OK");
 });
 
 // Route to create a new message
 app.post('/messages', verifyToken, async (req, res) => {
     console.log("messages req.body= '", req.body, "'");
     console.log("messages req.params= '", req.params, "'");
-    const msgbody = req.body.msgbody;
+    const msgbody = req.body;
     const username = req.username;
-    const returnHTML = false;
-
-    if (!text) {
-        return res.status(400).json({ message: 'Message text is required' });
-    }
+    const ipaddr = req.ip;
     
     const tm = Date.now();
     console.log("messages tm=", tm);
-    const message = { author:username, tm:tm, body:msgbody };
+    
+    if (!validateParamsOrFail({msgbody:msgbody}, { msgbody : 'string'}, "messages POST", res))
+        return;
     try {
-        await db.sql`INSERT INTO posts (author, tm, body)
-            VALUES(${username}, to_timestamp(${tm/1000}), ${msgbody})`;
+        await db.sql`INSERT INTO posts (author, tm, body, ipaddr)
+            VALUES(${username}, to_timestamp(${tm/1000}), ${msgbody}, ${ipaddr})`;
     } catch(e) {
         console.log("/messages error ", e);
-        return res.status(500).json(e);
+        return res.status(500).send("messages error: " + e);
     }
     // return res.status(201).json(message);
-    if(returnHTML) {
-        msgHTML = renderMessage(message, []);
-        return res.status(201).send(msgHTML);
-    }
-    return res.status(201).json(message);
+    return res.status(201).json({tm: tm});
 });
 
 // Route to remove subscription 
@@ -112,20 +166,20 @@ app.delete('/subscribe/:sub',  verifyToken, async (req, res) => {
     const username = req.username;
     const sub = req.params.sub;
 
-    if (!sub) {
-        return res.status(400).json({ message: 'No subscription provided' });
-    }
+    if(!validateParamsOrFail({ sub }, { sub : 'string'}, "subscribe DELETE", res))
+        return;
+
     if (username === sub) {
-        return res.status(400).json({ message: 'Cannot unsubscribe to yourself' });
+        return res.status(400).send('Cannot unsubscribe from yourself');
     }
     try {
-        await db.sql`delete from user_subs where username=${username} and sub=${sub}`
+        await db.sql`DELETE FROM usersubs WHERE username=${username} AND sub=${sub}`
     } catch(e) {
         console.log("/subscribe (DELETE) error ", e)
-        return res.status(500).json(e);
+        return res.status(500).send('SQL DELETE error: ' + e);
     }
     
-    return res.status(200).json({ message: 'Unsubscribed successfully' });
+    return res.status(200).send(sub);
 });
 
 // Route to subscribe to another user
@@ -134,23 +188,24 @@ app.post('/subscribe/:sub',  verifyToken, async (req, res) => {
     const username = req.username;
     const sub = req.params.sub;
 
-    if (!sub) {
-        return res.status(400).json({ message: 'No subscription provided' });
-    }
     if (username === sub) {
-        return res.status(400).json({ message: 'Cannot subscribe to yourself' });
+        return res.status(400).send('Cannot subscribe to yourself');
     }
     const usersub = { username:username, sub:sub };
+    if(!validateParamsOrFail(usersub, { sub : 'string'}, "subscribe POST", res))
+        return;
+    
     try {
         await db.sql`INSERT INTO usersubs 
             ${db.sql(usersub, 'username', 'sub')}`;
     } catch(e) {
         console.log("/subscribe error ", e)
-        return res.status(500).json(e);
+        return res.status(500).send('SQL INSERT error: ' + e);
     }
     
-    return res.status(200).json({ message: 'Subscribed successfully' });
+    return res.status(200).json(usersub);
 });
+
 
 // Route to get user's feed
 app.get('/feed', verifyToken, async (req, res) => {
@@ -160,12 +215,18 @@ app.get('/feed', verifyToken, async (req, res) => {
     const messagesLimit = 50;
     const returnHTML = false;
     // last update time
-    let lastupdate = Date.now() - 1000*60*60*24*nDays;
+    let lastUpdate = Date.now() - 1000*60*60*24*nDays
+    const feedRule = {
+        lastupdate : { type:'int' }
+    }
+    
     if (req.query.hasOwnProperty("lastupdate")) {
         try {
-            lastupdate = Number(req.query.lastupdate);
+            lastupdate = parseInt(req.query.lastupdate);
         } catch(e) { }
     }
+    if(!validateParamsOrFail({ lastupdate:lastupdate }, feedRule, "feed GET", res))
+        return;
     // const username = req.params.username;
     const username = req.username;
     console.log(`feed username='${username}' lastupdate=${lastupdate}`);
@@ -175,12 +236,13 @@ app.get('/feed', verifyToken, async (req, res) => {
           LEFT JOIN votesposts b ON a.author=b.author AND a.tm=b.tm 
           WHERE a.author IN (select sub FROM usersubs WHERE username=${username}) 
           AND a.tm > to_timestamp(${lastupdate/1000})
-          GROUP BY a.author, a.tm, a.body ORDER BY a.tm DESC LIMIT ${messagesLimit}) 
-        SELECT a.author, 1000*extract(epoch from a.tm) as tm, a.body, a.score, count(*) AS numreplies 
+          GROUP BY a.author, a.tm, a.body ORDER BY a.tm LIMIT ${messagesLimit}) 
+        SELECT a.author, trunc(1000*extract(epoch from a.tm)) as tm, a.body, a.score, count(*) AS numreplies 
         FROM cte a 
         LEFT JOIN replies b 
         ON a.author=b.replyauthor AND a.tm=b.replytm 
-        GROUP BY a.author, a.tm, a.body, a.score`;
+        GROUP BY a.author, a.tm, a.body, a.score
+        ORDER BY a.tm`
         if (returnHTML) {
             var feed = "";
         } else {
@@ -208,14 +270,14 @@ app.get('/feed', verifyToken, async (req, res) => {
         await f();
     
         // console.log("feed=", feed);
-        res.set("HX-Trigger", `{"feedUpdated": ${tm} }`);
         if(returnHTML) {
+            res.set("HX-Trigger", `{"feedUpdated": ${tm} }`);
             return res.status(200).send(feed);
         }
-        return res.status(200).json(feed);
+        return res.status(200).json({"feed":feed, "lastupdate":tm});
     } catch(e) {
         console.log(e);
-        return res.status(500).json(e);
+        return res.status(500).send('feed generation error: ' + e);
     }
 });
 
@@ -241,109 +303,75 @@ app.get('/users', verifyToken, async (req, res) => {
         }
     } catch(e) {
         console.log(e);
-        return res.status(500).json(e);
+        return res.status(500).send('user list generation error: ' + e);
     }
 });
 
-app.post('/vote/:author/:tm', verifyToken, async (req, res) => {
-    const username = req.username;
-    const author = req.params.author;
-    const updown = req.query.updown;
-    const isreply = req.query.isreply;    
-    console.log(`${username} /vote/${author}/${tm}/${updown}`);
+const voteRule = {
+    username: 'string',
+    author: 'string',
+    tm : 'int',
+    isupvote: 'bool',
+    isreply : 'bool'
+}
 
-    if (!updown) {
-        return res.status(400).json({ message: 'updown is required' });
-    }
-    if (!isreply) {
-        return res.status(400).json({ message: 'isreply required' });
-    }
-    
-    if (isreply === "true") {
-        isreply = true;
-    } else if (isreply != "false") {
-        return res.status(400).json({ message: "'isreply' can only be 'true' or 'false'"});
-    }
-    isreply = false;
-    let score = 0;
-    if (updown === "up") {
-        score = 1;
-    } else if (updown === "down") {
-        score = -1;
-    } else {
-        return res.status(400).json({ message: "Up/down needs to be only 'up' or 'down'"});
-    }
-    
-    let tm = 0;
-    try { 
-        tm = Number(req.params.tm);
-    } catch(e) { 
-        return res.status(400).json({ message: `Could not convert tm ${tm} to number`}); 
-    }
-    // const vote = { author:author, tm:tm, username:username, score:score };
+app.post('/vote/:author/:tm', verifyToken, async (req, res) => {
+    const vote = {username : req.username, 
+               author : req.params.author,
+               tm : req.params.tm,
+               isupvote : req.query.isupvote, 
+               isreply : req.query.isreply};
+    if(!validateParamsOrFail(vote, voteRule, "vote", res))
+        return;
+
+    score = vote.isupvote? 1 : -1;
     try {
-        if (isreply) {
+        if (vote.isreply == 'true') {
             await db.sql`INSERT INTO votesposts (author, tm, username, score)
-                VALUES(${author}, to_timestamp(${tm/1000}), ${username}, ${score})`;
+                VALUES(${vote.author}, to_timestamp(${vote.tm/1000}), ${username}, ${score})`;
         } else {
             await db.sql`INSERT INTO votesreplies (author, tm, username, score)
                 VALUES(${author}, to_timestamp(${tm/1000}), ${username}, ${score})`;
         }
     } catch(e) {
         console.log("/vote error ", e)
-        return res.status(500).json(e);
+        return res.status(500).send("vote error: " + e);
     }
     
     return res.status(201).json(vote);
 });
 
-app.post('/replyto', verifyToken, async (req, res) => {
-    const username = req.username;
-    console.log('/replyto req.params= ', req.params, 'req.query= ', req.query, ' req.body= ', req.body);
-    const origauthor = req.body.origauthor;
-    const origtm = req.body.origtm;
-    const replyauthor = req.body.replyauthor;
-    const replytm = req.body.replytm;
-    const msgbody = req.body.msgbody;
-    const returnHTML = false;
-
-    if (!msgbody) {
-        return res.status(400).json({ message: "'msgbody' is required"});
-    }
-    if (!replyauthor || !replytm) {
-        return res.status(400).json({ message: "Invalid 'replyto' or 'replytotm'"});
-    }
-    if (!origauthor || !origtm) {
-        return res.status(400).json({ message: "Invalid 'origauthor' or 'origtm'"});
-    }
-    
+const replyRule = {
+    author: 'string', 
+    tm : 'int',
+    origauthor : 'string',
+    origtm : 'int',
+    replyauthor : 'string',
+    replytm : 'int',
+    msgbody : 'string'
+}
+app.post('/reply', verifyToken, async (req, res) => {
+    const msg = {author : req.username,
+               tm : Date.now(),
+               origauthor : req.body.origauthor,
+               origtm : req.body.origtm,
+               replyauthor : req.body.replyauthor,
+               replytm : req.body.replytm,
+               msgbody : req.body.msgbody };
+    if(!validateParamsOrFail(msg, replyRule, 'reply', res))
+        return;
+    const ipaddr = req.ip;
+    console.log("msg= ", msg);
     try {
-        replytm = Number(replytm);
-        origtm = Number(origtm);
-    } catch(e) {
-        return res.status(400).json({ message: `Bad 'replytm' or 'origtm' ${replytm} ${origtm} could not convert to integer`});
-    }
-    tm = Date.now()
-    console.log(`tm=${tm}`);
-    
-    const message = { author:username, tm:tm, body:msgbody, 
-        origauthor:origauthor, origtm:origtm, 
-        replyauthor:replyauthor, replytm:replytm};
-    console.log("message= ", message);
-    try {
-        await db.sql`INSERT INTO replies (author, tm, body, origauthor, origtm, replyauthor, replytm)
-            VALUES(${username}, to_timestamp(${tm/1000}), ${msgbody}, ${origauthor}, ${origtm/1000}, 
-            ${replyauthor}, to_timestamp(${replytm/1000}))`
+        await db.sql`INSERT INTO replies (author, tm, body, origauthor, origtm, replyauthor, replytm, ipaddr)
+            VALUES(${msg.author}, to_timestamp(${msg.tm/1000}), ${msg.msgbody}, ${msg.origauthor}, to_timestamp(${msg.origtm/1000}), 
+            ${msg.replyauthor}, to_timestamp(${msg.replytm/1000}), ${ipaddr})`
     } catch(e) {
         console.log("/reply error ", e)
-        return res.status(500).json(e);
+        return res.status(500).send('replyto error:' + e);
     }
     
-    if(returnHTML) {
-        msgHTML = renderMessage(message, []);
-        return res.status(201).send(msgHTML);
-    } 
-    return res.status(201).json(message);
+    return res.status(201).json({"tm":msg.tm});
 });
 
 
