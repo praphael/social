@@ -126,14 +126,20 @@
             }
         }
         
-        appState = { token : "", lastupdate : 0 }; 
+        function resetAppState() {
+            appState = { token : "", lastupdate : 0 }; 
+            appState.feed = [];
+            appState.feedMap = new Map();
+            appState.newMessages = [];
+            appState.userList = [];
+            appState.username = null;
+            appState.firstRender = true;
+            appState.token = "";
+            appState.lastupdate = 0;
+        }
+        
+        resetAppState();
         appState.token = sessionStorage.getItem("token");
-        appState.feed = [];
-        appState.feedMap = new Map();
-        appState.newMessages = [];
-        appState.userList = [];
-        appState.username = null;
-        appState.firstRender = true;
 
         if (appState.token) {
             changeState("feed");
@@ -148,114 +154,113 @@
         document.getElementById("newPostText").addEventListener('keydown', async (e) => {
             console.log("newPostText: ", e.code);
         });
+
+        function makeRequestObj(method, body, authtoken) {
+            let req = { method: method, 
+                        headers: { 'Content-Type': 'application/json', 
+                                   'Authorization' : appState.token } };
+            if (method == 'POST') {
+                req.body = "";
+                if (body != null && body != undefined)
+                    req.body = JSON.stringify(body);
+            }
+                
+            return req;
+        }
+
+        async function doRequest(route, method, body, errHandler) {
+            try {
+                const response = await fetch(baseURL+route, makeRequestObj(method, body));
+                const status = response.status;
+                // console.log(`'${route}' ${method} status ${status}`);
+                if (statusExpected === undefined || statusExpected === null)
+                    statusExpected = 200;
+                if(status != statusExpected) {
+                    console.log(`'${route}' ${method} status ${status} expected ${statusExpected}`);
+                }
+                if (response.ok) {
+                    r = await response.json();
+                    return r;
+                } else {
+                    const errorMessage = await response.text();
+                    errHandler(errorMessage);
+                    return null;
+                }
+            } catch (error) {
+                console.error(`'${route}' fetch error: ${error}`);
+                errHandler(error);
+                return null;
+            }
+        }
         
         async function login() {
             console.log("login");
-            const userData = {
+            const loginData = {
                 username: document.getElementById("loginusername").value,
                 password: document.getElementById("loginpassword").value
             };
 
-            try {
-                sessionStorage.clear();
-                appState.lastupdate = 0;
-                const response = await fetch('/login', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(userData)
-                });
-
-                if (response.ok) {
-                    console.log(`login response ok`);
-                    const j = await response.json();
-                    console.log(`successful login token=${j.token}`);
-                    sessionStorage.setItem("token", j.token);
-                    appState.username = userData.username;
-                    appState.token = j.token;
-                    changeState("feed");
-                } else {
-                    const errorMessage = await response.text();
-                    console.log(errorMessage);
-                    alert(`Error: ${errorMessage}`);
-                }
-            } catch (error) {
-                console.error('Error:', error);
+            sessionStorage.clear();
+            appState.lastupdate = 0;
+            const j = await doRequest('/login', 'POST', loginData, (errMsg) => {
+                console.log(`ERROR ${errMsg}`);
+                alert(`Login failed ${errMsg}`);
+            });
+            if (j != null) {
+                console.log(`successful login token=${j.token}`);
+                sessionStorage.setItem("token", j.token);
+                appState.username = userData.username;
+                appState.token = j.token;
+                changeState("feed");
             }
         };
 
         function logout() {
-            appState.token = "";
-            appState.lastupdate = 0;
-            appState.feed = [];
-            appState.feedMap = new Map();
-            appState.userList = [];
-            appState.newMessages = [];
-            appState.firstRender = true;
-            appState.username = null;
             sessionStorage.clear();
+            resetAppState();            
             changeState("login");
         }
 
-        async function postReply(author, tm, origauthor, origtm) {
+        async function postReply(replyid, origreplyid) {
             const replyToData = {
-                origauthor: origauthor,
-                origtm: origtm,
-                replyauthor: author,
-                replytm: tm,
+                replyid: replyid,
+                origreplyid: origreplyid,
                 msgbody: document.getElementById(`${formName}body`).value
             };
 
-            try {
-                const response = await fetch('/reply', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization' : appState.token
-                    },
-                    body: JSON.stringify(replyToData)
-                });
+            const j = await doRequest('/post', 'POST', body, replyToData, (errMsg) => {
+                alert(`Error: ${errMsg}`);
+            });
 
-                if (response.ok) {
-                    const j = await response.json();
-                    console.log("response ", j);
-                    cancelReply(formName);
-                } else {
-                    const errorMessage = await response.text();
-                    console.log(errorMessage);
-                    alert(`Error: ${errorMessage}`);
-                }
-            } catch (error) {
-                console.error('Error:', error);
-            }
+            if (j != null) {
+                cancelReply(formName);
+            } 
         }
 
-        function reply(author, tm, origauthor, origtm) {
-            divName = `replydiv${author}${tm}`;
+        function replyClick(postid, origreplyid) {
+            divName = `replydiv${postid}`;
             div = document.getElementById(divName);
             if (!(div === null || div === undefined)) {
                 console.log(`cancelling reply ${divName}`);
                 cancelReply(divName);
                 return;
             }
-            rowDivName = `replyrow${author}${tm}`;
+            rowDivName = `replyrow${postid}`;
             rowDiv = document.getElementById(rowDivName);
             console.log(`reply() rowDivName=${rowDivName} rowDiv=${rowDiv}`);
-            formName = `replyform${author}${tm}`;
+            formName = `replyform${postid}`;
             html = `<div id="${divName}" class="col">`;
             html += `<div class="col-10"><form class="container-fluid" name="${formName}" id="${formName}">`;
             html += '<div class="row">';
             // html += `<label class="col-1 form-label">Reply:</label>
             html += `<input class="ms-2 col-6 form-control" id="${formName}body">`;
             html += '</div>';
-            html += `<div class="row"><button type="button" onclick="postReply('${author}', ${tm}, '${origauthor}', ${origtm})" class="col-3 btn btn-sm btn-primary">Post</button>`;
+            html += `<div class="row"><button type="button" onclick="postReply(${postid}, ${replyid})" class="col-3 btn btn-sm btn-primary">Post</button>`;
             html += `<button type="button" class="col-3 btn btn-sm btn-secondary" onclick="cancelReply('${divName}')">Cancel</button></div>`;
             html += '<div id="replyresponse"></div>';
             html += '</form></div></div>';
-            rowDiv.innerHTML = html;            
+            rowDiv.innerHTML = html;
         }
-        
 
         function cancelReply(divName) {
             console.log("cancelReply divName='", divName);
@@ -264,35 +269,18 @@
         }
 
         async function postNew() {
-            text = document.getElementById("newPostText").value;
-            try {
-                const response = await fetch('/messages', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'text/plain',
-                        'Authorization' : appState.token
-                    },
-                    body: text
-                });
+            const msgbody = document.getElementById("newPostText").value;
+            const rt = `/post`
+            const j = await doRequest(rt, 'POST', {msgbody:msgbody}, (errMsg) => {
+                alert("Post message failed ", errMsg);
+                console.log(errMsg);
+            });
 
-                if (response.ok) {
-                    console.log("postNew reponse OK");
-                    const resp = await response.json();
-                    console.log("postNew server response", resp);
-                    msg = { author:appState.username, tm:resp.tm, body:text, numreplies:0};
-                    mergeFeed([msg]);
-                    await renderFeed();
-                    
-                    // insert the post into the feed
-                    // feed = [j].concat(feed);
-                    // await renderFeed();
-                } else {
-                    const errorMessage = await response.text();
-                    console.log(errorMessage);
-                    alert(`Error: ${errorMessage}`);
-                }
-            } catch (error) {
-                console.error('Error:', error);
+            if (j != null) {
+                console.log("postNew server response", j);
+                msg = { author:appState.username, tm:j.tm, body:text, numreplies:0};
+                mergeFeed([msg]);
+                await renderFeed();
             }
         };
 
@@ -317,11 +305,11 @@
                 return `${Math.round(diffMinutes)} min`
             } else {
                 return `${Math.round(diffTimeSec)} sec`
-            }   
+            }
         }
 
-        function renderMessage(m, origauthor, origtm) {
-            const id = `${m.author}${m.tm}`;
+        function renderMessage(m) {
+            const id = `msg${m.postid}`;
             let x = `<div id="${id}" class="mb-3 mt-3 row container">`;
             x += `<div class="row">`;
             x += `  <span class="col"><h5>${m.author}</h5></span>`;
@@ -333,7 +321,7 @@
             x += `<div class="row justify-content-between">`;
             // reply button
             x += `  <span class="col-2"><button type="button" class="btn btn-outline-info" data-bs-toggle="button"`;
-            x += `       onclick="reply('${m.author}', ${m.tm}, '${origauthor}', ${origtm})">Reply</button></span>`;
+            x += `       onclick="replyClick(${m.postid}, ${m.origreplyid})">Reply</button></span>`;
             // vote buttons 
             x += '  <span class="col-2">'; 
             x += `     <span class="container-fluid"><button type="button" class="btn btn-outline-success">^</button>`;
@@ -341,15 +329,18 @@
             x += '     </span>';
             x += '  </span>';
             x += '</div>';
-            x += `<div class="row" id="replyrow${m.author}${m.tm}"></div>`;
+            x += `<div class="row" id="replyrow${m.postid}"></div>`;
+            // replies area
             x += '<div class="row mt-2">';
             x += `<span class="col-2">${m.numreplies} replies</span>`;
-            x += `<span class="col-2"><button class="btn btn-sm btn-outline-light" data-bs-toggle="button">Show</button></span>`;
+            x += `<span class="col-2"><button class="btn btn-sm btn-outline-light" data-bs-toggle="button" `;
+            x += `  onclick="showReplies(${m.postid})">Show</button></span>`;
             x += '</div>';
+            x += `<div class="row" id="replies${m.postid}"></div>`;
             if (!m.replies === undefined && !m.replies == null && m.replies.length > 0) {
-                replies.forEach( (r) => {
-                    x += renderMessage(r, origauthor, origtm);
-                });
+                for (let r of replies) {
+                    x += renderMessage(r, postid, origreplyid);
+                };
             }
             x += '</div></div>';
             return x;
@@ -404,27 +395,16 @@
         async function getFeed() {
             console.log("getFeed");
 
-            try {
-                const response = await fetch(`/feed?lastupdate=${appState.lastupdate}`, {
-                    method: 'GET',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization' : appState.token
-                    }
-                });
+            const rt = `/feed?lastupdate=${appState.lastupdate}`
+            const j = await doRequest(rt, 'GET', null, (errMsg) => { 
+                alert(errMsg);
+                console.log(errMsg);
+            });
 
-                if (response.ok) {
-                    console.log("getFeed response OK")
-                    const j = await response.json();
-                    mergeFeed(j.feed);
-                    await renderFeed();
-                    appState.lastupdate = j.lastupdate;
-                } else {
-                    const errorMessage = await response.text();
-                    console.log(errorMessage);
-                }
-            } catch (error) {
-                console.error('Error:', error);
+            if (j != null) {
+                mergeFeed(j.feed);
+                await renderFeed();
+                appState.lastupdate = j.lastupdate;
             }
 
             setTimeout("getFeed()", 10000);
@@ -436,7 +416,7 @@
             for (u of appState.userList) { // list-group-item
                 // html += `<li style="background-color: yellow" class=" container-fluid  justify-content-end" style="background-color: red">';
                 html += '<div class="row mb-3 justify-content-between border-top border-right">';
-                html += `<span class="col-1 border-left">${u.username}</span>`; 
+                html += `<span class="col-1 border-left">${u.username}</span>`;
                 html += `<span class="col-1"><button class="btn btn-secondary" click="subscribe(${u.username})">sub</button></span>`;
                 html += '</div>';
                 // html += '</li>';
@@ -445,33 +425,21 @@
             // html += "</ul>";
             document.getElementById("users").innerHTML = html;
         }
+
         async function getUserList() {
             console.log("getUsers");
 
-            try {
-                const response = await fetch(`/users`, {
-                    method: 'GET',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization' : appState.token
-                    }
-                });
+            const j = await doRequest('/users', 'GET', null, (errMsg) => { 
+                alert(errMsg);
+                console.log(errMsg);
+            });
 
-                if (response.ok) {
-                    console.log("getUsers response OK")
-                    const j = await response.json();
-                    appState.userList = j;
-                    await renderUserList();
-                } else {
-                    const errorMessage = await response.text();
-                    console.log(errorMessage);
-                    alert(`Error: ${errorMessage}`);
-                }
-            } catch (error) {
-                console.error('Error:', error);
+            if (j != null) {
+                appState.userList = j;
+                await renderUserList();
             }
 
-            setTimeout("getUserList()", 30000);
+            setTimeout("getUserList()", 60000);
         }
     </script>
 </body>

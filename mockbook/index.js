@@ -3,48 +3,15 @@ const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const path = require('path'); // Require the path module
 const sha256 = require('js-sha256');
-const Parameter = require('parameter');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = 'your_jwt_secret';
 const db = require('./db.js');
 
 app.use(bodyParser.json());
-app.use(bodyParser.text());
 app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from the public directory
 
 startTime = Date.now();
-
-const paramValidator = new Parameter({
-    /*
-    translate: function() {
-      var args = Array.prototype.slice.call(arguments);
-      // Assume there have I18n.t method for convert language.
-      return I18n.t.apply(I18n, args);
-    }, */
-    validateRoot: true, // restrict the being validate value must be a object
-  });
-
-function validateParamsOrFail(params, rule, endpt, res) {
-    let errs = null;
-    try {
-        errs = paramValidator.validate(rule, params);
-    } catch(e) {
-        const msg = endpt + " exception during parameter validation: " + e;
-        console.log(JSON.stringify(params));
-        console.log(msg);
-        res.status(500).send(msg);
-        return false;
-    }
-    if(errs) {
-        const msg = endpt + " parameter validation failed: " + JSON.stringify(errs)
-        console.log(msg);
-        console.log(JSON.stringify(params));
-        res.status(400).send(msg);
-        return false;
-    }
-    return true;
-}
 
 // Middleware to verify JWT token
 const verifyToken = (req, res, next) => {
@@ -59,38 +26,49 @@ const verifyToken = (req, res, next) => {
             console.log(`verifyToken invalid token ${token}`);
             return res.status(401).send('Unauthorized: Invalid token');
         }
-        req.username = decoded.id;
+        req.userID = decoded.id;
         next();
     });
 };
 
-const loginRule = {
-    username: 'string', 
-    password: 'password'
+function parseIntOrFail(x, paramName, isRequired, endpt, res) {
+    if (x != undefined && x != null) {
+        try { 
+            x = parseInt(x); 
+            return x;
+        }
+        catch(e) {
+            res.status(400).send(`${endpt} failed integer parse of '${paramName}' (got '${x}')`);
+            return false;
+        }
+    } else if(isRequired) {
+        res.status(400).send(`${endpt} '${paramName}' missing`);
+        return false;
+    }
+    return null;
 }
+
 // Route for user login
 app.post('/login', async (req, res) => {
-    const { username, password } = req.body;
-    const ipaddr = req.ip;
-    if (!validateParamsOrFail({ username, password }, loginRule, "login", res)) 
-        return;
-    
     try {
-        // const user = users.find(user => user.username === username && user.password === password);
-        const users = await db.sql`select passhash from users where username=${ username }`;
-        console.log("login users= " + users);
+        const { username, password } = req.body;
+        const ipaddr = req.ip;
+        const users = await db.sql`SELECT userid, passhash FROM users WHERE username=${ username }`;
+        // console.log(`login users= ${JSON.stringify(users)}`);
         if (users.length > 0 && (sha256(password) == users[0].passhash)) {
-            const token = jwt.sign({ id: username }, JWT_SECRET, { expiresIn: '1h' });
+            const userID = users[0].userid;
+            //console.log(`userID= ${userID}`);
+            const token = jwt.sign({ id: userID }, JWT_SECRET, { expiresIn: '1h' });
             try {
-                const logininfo = { username:username, ipaddr:ipaddr };
+                const logininfo = { userid:userID, ipaddr:ipaddr };
                 await db.sql`INSERT INTO logins
-                    ${db.sql(logininfo, 'username', 'ipaddr')}`;
-                console.log(`user ${username} logged in token= ${token}`);
-                return res.status(200).json({ token });
+                    ${db.sql(logininfo, 'userid', 'ipaddr')}`;
+                // console.log(`user ${username} userID=${userID} logged in token= ${token}`);
+                return res.status(200).json({ token, userID });
             } catch(e) {
                 const msg = "login failure: " + e;
                 console.log(msg);
-                return res.status(500).text(msg);
+                return res.status(500).send(msg);
             }
         } else {
             console.log("Invalid login from '" + username + "'");
@@ -107,173 +85,240 @@ app.post('/auth2fa', async (req, res) => {
 
 });
 
-const registerRule = {
-    username: 'string',
-    password: 'password',
-    password2: 'password',
-    email: 'email',
-    auth2fa : 'string'
-}
 // registration route
 app.post('/register', async (req, res) => {
-    console.log("register req.params= '" , req.params, "'")
-    const { username, password, password2, email, auth2fa } = req.body;
-    if (!validateParamsOrFail({ username, password, password2, email, auth2fa }, registerRule, "register", res))
-        return;
-    if(password != password2) {
-        return res.status(400).send('Passwords do not match');
-    }
-    const ipaddr = req.ip;
-    const newuser = { username:username, passhash:sha256(password),
-                      email:email, ipaddr:ipaddr, auth2fa:auth2fa };
     try {
+        console.log("/register POST req.params='", req.params, "'");
+        const { username, password, password2, email, auth2fa } = req.body;
+    
+        if(password != password2) {
+            return res.status(400).send('Passwords do not match');
+        }
+        const ipaddr = req.ip;
+        const newuser = { username:username, passhash:sha256(password),
+                      email:email, ipaddr:ipaddr, auth2fa:auth2fa };
+    
         await db.sql`INSERT INTO users
             ${db.sql(newuser, 'username', 'passhash', 'email', 'ipaddr', 'auth2fa')}`;
+        return res.status(201).send("OK");
     } catch(e) {
         console.log("/register error ", e)
         return res.status(500).send('SQL insert error: ' + e);
     }
-    return res.status(201).send("OK");
 });
 
-// Route to create a new message
-app.post('/messages', verifyToken, async (req, res) => {
-    console.log("messages req.body= '", req.body, "'");
-    console.log("messages req.params= '", req.params, "'");
-    const msgbody = req.body;
-    const username = req.username;
-    const ipaddr = req.ip;
-    
-    const tm = Date.now();
-    console.log("messages tm=", tm);
-    
-    if (!validateParamsOrFail({msgbody:msgbody}, { msgbody : 'string'}, "messages POST", res))
-        return;
+// Route to create a new post
+app.post('/posts', verifyToken, async (req, res) => {
     try {
-        await db.sql`INSERT INTO posts (author, tm, body, ipaddr)
-            VALUES(${username}, to_timestamp(${tm/1000}), ${msgbody}, ${ipaddr})`;
+        console.log("/posts POST req.params= '", req.params, "' req.body='", req.body, "'");
+        msgbody = req.body.msgbody;
+        replyid = parseIntOrFail(req.body.replyid, 'replyid', false, '/posts POST', res);
+        // return on failure (status already set)
+        // replyid was present but parsed failed
+        if(replyid === false) return;
+        
+        // required if we successfully parsed replyid, otherwie not required
+        const isRequired = (replyid != null);
+        origreplyid = parseIntOrFail(req.body.origreplyid, 'origreplyid', isRequired, '/posts POST', res);
+        // return on failure (status already set)
+        if(origreplyid === false) return;
+        // or if parse of origreplyid succeeded and replyid did not 
+        if(origreplyid != null && replyid === null) {
+            const msg = `'origreplyid'='${origreplyid}' and 'replyid'='${replydid}' 
+            must both be present and valid or both not present in request`;
+            return res.status(400).send(msg);
+        }
+        
+        const ipaddr = req.ip;
+        const tm = Date.now();
+        console.log("posts tm=", tm);
+    
+        await db.sql`INSERT INTO posts (authorid, tm, body, ipaddr, origreplyid, replyid)
+            VALUES(${req.userID}, to_timestamp(${tm/1000}), ${msgbody}, ${ipaddr},
+            ${origreplyid}, ${replyid})`;
+        return res.status(201).json({tm: tm});
     } catch(e) {
-        console.log("/messages error ", e);
+        console.log("/posts error ", e);
         return res.status(500).send("messages error: " + e);
     }
     // return res.status(201).json(message);
-    return res.status(201).json({tm: tm});
+});
+
+// fetch user posts based on timestamp
+app.get('/posts/:authorID/:tm', verifyToken, async (req, res) => {
+    try {
+        console.log("/posts GET req.params='", req.params, "'");
+        const postsLimit=100;
+        let {authorID, tm} = req.params;
+        tm = parseIntOrFail(tm, 'tm', true, '/posts GET', res);
+        authorID = parseIntOrFail(authorID, 'authorID', true, '/posts GET', res);
+        console.log(`/posts authorID=${authorID} tm=${tm}`);
+        if(!(authorID == 0 || authorID == req.userID)) {
+            return res.status(400).send("/posts GET only authorID==0 or authorID==req.userID supported for now!");
+        }
+        authorID = req.userID;
+        
+        const r = await db.sql`SELECT * FROM posts WHERE authorid=${authorID} 
+            AND tm>=to_timestamp(${tm/1000}) LIMIT ${postsLimit}`;
+        return res.status(200).json({posts:r});
+    } catch(e) {
+        console.log("/posts GET error ", e);
+        return res.status(500).send("posts GET error: " + e);
+    }
+});
+
+// fetch replies based on postid
+app.get('/replies/:postid', verifyToken, async (req, res) => {
+    try {
+        console.log("/replies GET req.params= '", req.params, "' req.query= '", req.query, "'");
+        const postID = parseIntOrFail(req.params.postid, 'postid', true, '/replies', res);
+        if(postID == false) return;
+        let tm1 = parseIntOrFail(req.query.tmlow, 'tmlow', false, '/replies GET', res);
+        let tm2 = parseIntOrFail(req.query.tmhigh, 'tmhigh', false, '/replies GET', res);
+        if(tm1 == null) tm1 = 0;
+        if(tm2 == null) tm2 = Date.now();
+        const messagesLimit = 200;
+        // TODO only allow query if userID is subscribed
+        const r = await db.sql`WITH cte1 as 
+            (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
+            FROM posts a
+            LEFT JOIN votes b ON a.postid=b.postid
+            LEFT JOIN users c ON a.authorid=c.userid
+            WHERE a.replyid=${postID}
+            AND a.tm BETWEEN to_timestamp(${tm1/1000}) AND to_timestamp(${tm2/1000})
+            GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit})
+        SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
+            a.body, a.score, count(b.origreplyid) AS numreplies
+        FROM cte1 a
+        LEFT JOIN posts b ON a.postid=b.replyid
+        GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
+        ORDER BY tm DESC`
+        return res.status(200).json({posts:r});
+    } catch(e) {
+        console.log("/posts GET error ", e);
+        return res.status(500).send("posts GET error: " + e);
+    }
 });
 
 // Route to remove subscription 
-app.delete('/subscribe/:sub',  verifyToken, async (req, res) => {
-    console.log("DELETE /subscribe req.params", req.params)
-    const username = req.username;
-    const sub = req.params.sub;
-
-    if(!validateParamsOrFail({ sub }, { sub : 'string'}, "subscribe DELETE", res))
-        return;
-
-    if (username === sub) {
-        return res.status(400).send('Cannot unsubscribe from yourself');
-    }
+app.delete('/subs/:subid',  verifyToken, async (req, res) => {
     try {
-        await db.sql`DELETE FROM usersubs WHERE username=${username} AND sub=${sub}`
+        console.log("/subs DELETE req.params='", req.params, "'");
+        const subID = parseIntOrFail(req.params.subid, 'subid', true, '/subs DELETE', res);
+        if(subID === false) return;
+        if (req.userID === subID) {
+            return res.status(400).send('Cannot unsubscribe from yourself');
+        }
+        await db.sql`DELETE FROM usersubs WHERE userid=${req.userID} AND subid=${subID}`
+        return res.status(200).json({subid:subID});
     } catch(e) {
         console.log("/subscribe (DELETE) error ", e)
         return res.status(500).send('SQL DELETE error: ' + e);
     }
-    
-    return res.status(200).send(sub);
 });
 
 // Route to subscribe to another user
-app.post('/subscribe/:sub',  verifyToken, async (req, res) => {
-    console.log("/subscribe req.params", req.params)
-    const username = req.username;
-    const sub = req.params.sub;
-
-    if (username === sub) {
-        return res.status(400).send('Cannot subscribe to yourself');
-    }
-    const usersub = { username:username, sub:sub };
-    if(!validateParamsOrFail(usersub, { sub : 'string'}, "subscribe POST", res))
-        return;
-    
+app.post('/subs/:subid', verifyToken, async (req, res) => {
     try {
+        console.log("/subs POST req.params='", req.params, "'");
+        const userID = req.userID;
+        const subID = parseIntOrFail(req.params.subid, 'subid', true, '/subs', res);
+        if (subID === false) return;
+
+        if (userID === subID) {
+            return res.status(400).send('Cannot subscribe to yourself');
+        }
+        const usersub = { userid:userID, subid:subID };
+        
         await db.sql`INSERT INTO usersubs 
-            ${db.sql(usersub, 'username', 'sub')}`;
+            ${db.sql(usersub, 'userid', 'subid')}`;
+            return res.status(201).json(usersub);
     } catch(e) {
         console.log("/subscribe error ", e)
         return res.status(500).send('SQL INSERT error: ' + e);
     }
-    
-    return res.status(200).json(usersub);
 });
 
+// get list of users, to which user is either or not subscribed
+app.get('/subs', verifyToken, async (req, res) => {
+    try {
+        console.log("/subs GET req.query='", req.query, "'");
+        const mode = req.query.mode;
+        if(!(mode === 'subs' || mode === 'notsubs')) {
+            return res.status(500).send(`'mode' must be either 'subs' or 'notsubs' got '${mode}'`);
+        }
+        const userUnsubLimit = 30;
+        const userSubLimit = 500;
+        
+        let users=null;
+        // get all subs for this user
+        if (mode === 'subs') {
+            users = await db.sql`SELECT userid, username FROM users
+            WHERE userid IN (SELECT subid FROM usersubs WHERE userid=${req.userID})
+            AND userid!=${req.userID}
+            LIMIT ${userSubLimit}`;
+        }
+        else { // (mode === 'notsubs')
+            users = await db.sql`SELECT userid, username FROM users
+            WHERE userid NOT IN (SELECT subid FROM usersubs WHERE userid=${req.userID})
+            AND userid!=${req.userID}
+            LIMIT ${userUnsubLimit}`;
+        }
+        return res.status(200).json({users:users});
+    } catch(e) {
+        console.log(e);
+        return res.status(500).send('user list generation error: ' + e);
+    }
+});
 
 // Route to get user's feed
 app.get('/feed', verifyToken, async (req, res) => {
-    console.log("/feed req.query", req.query);
-    
-    const nDays = 60;
-    const messagesLimit = 50;
-    const returnHTML = false;
-    // last update time
-    let lastUpdate = Date.now() - 1000*60*60*24*nDays
-    const feedRule = {
-        lastupdate : { type:'int' }
-    }
-    
-    if (req.query.hasOwnProperty("lastupdate")) {
-        try {
-            lastupdate = parseInt(req.query.lastupdate);
-        } catch(e) { }
-    }
-    if(!validateParamsOrFail({ lastupdate:lastupdate }, feedRule, "feed GET", res))
-        return;
-    // const username = req.params.username;
-    const username = req.username;
-    console.log(`feed username='${username}' lastupdate=${lastupdate}`);
-    
     try {
-        const messageFeed = await db.sql`WITH cte AS (SELECT a.author, a.tm, sum(score) AS score, a.body FROM posts a 
-          LEFT JOIN votesposts b ON a.author=b.author AND a.tm=b.tm 
-          WHERE a.author IN (select sub FROM usersubs WHERE username=${username}) 
-          AND a.tm > to_timestamp(${lastupdate/1000})
-          GROUP BY a.author, a.tm, a.body ORDER BY a.tm LIMIT ${messagesLimit}) 
-        SELECT a.author, trunc(1000*extract(epoch from a.tm)) as tm, a.body, a.score, count(*) AS numreplies 
-        FROM cte a 
-        LEFT JOIN replies b 
-        ON a.author=b.replyauthor AND a.tm=b.replytm 
-        GROUP BY a.author, a.tm, a.body, a.score
-        ORDER BY a.tm`
-        if (returnHTML) {
-            var feed = "";
-        } else {
-            var feed = [];
+        console.log("/feed GET req.query='", req.query, "'");
+    
+        const nDays = 60;
+        const messagesLimit = 10;
+        // last update time
+        let lastupdate = Date.now() - 1000*60*60*24*nDays
+        if (req.query.hasOwnProperty("lastupdate")) {
+            try {
+                lastupdate = parseInt(req.query.lastupdate);
+            } catch(e) {
+                return res.status(400).send(`Could not parse 'lastupdate' ${lastupdate}`);
+            }
         }
+        // const username = req.params.username;
+        const userID = req.userID;
+        console.log(`feed userID='${userID}' lastupdate=${lastupdate}`);
+    
+        const messageFeed = await db.sql`WITH cte1 as 
+            (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
+             FROM posts a 
+             LEFT JOIN votes b ON a.postid=b.postid 
+             LEFT JOIN users c ON a.authorid=c.userid 
+             WHERE a.authorid IN (SELECT subid FROM usersubs WHERE userid=${userID}) 
+                 AND a.origreplyid IS NULL 
+                 AND a.tm > to_timestamp(${lastupdate/1000})
+             GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit}) 
+        SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
+               a.body, a.score, count(b.origreplyid) AS numreplies 
+        FROM cte1 a 
+        LEFT JOIN posts b ON a.postid=b.origreplyid 
+        GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
+        ORDER BY tm DESC`;
+
+        var feed = [];
         tm = Date.now();
         console.log("messageFeed.length= ", messageFeed.length);
         const f = async () => {
             for (m of messageFeed) {
-                // console.log(m);
-                /*
-                replies = await db.sql`SELECT author, tm, body 
-                FROM replies WHERE replyto=${ m.author } AND replytotm=to_timestamp(${ m.tm })
-                ORDER BY tm DESC`;
-                */
-                replies = [];
-                if (returnHTML) {
-                    feed += renderMessage(m, replies); 
-                } else {
-                    m.replies = replies;
-                    feed.push(m); 
-                }
+                // leave blank - client will request if needed
+                m.replies = [];
+                feed.push(m); 
             }
         }
         await f();
-    
-        // console.log("feed=", feed);
-        if(returnHTML) {
-            res.set("HX-Trigger", `{"feedUpdated": ${tm} }`);
-            return res.status(200).send(feed);
-        }
+
         return res.status(200).json({"feed":feed, "lastupdate":tm});
     } catch(e) {
         console.log(e);
@@ -281,99 +326,36 @@ app.get('/feed', verifyToken, async (req, res) => {
     }
 });
 
-// get list of users to which user is not subscribed
-app.get('/users', verifyToken, async (req, res) => {
-    const returnHTML = false;
-    const userLimit = 30;
-    console.log("/users");
+app.post('/vote/:postid', verifyToken, async (req, res) => {
     try {
-        const users = await db.sql`SELECT username FROM users WHERE username!=${req.username}
-        AND username NOT IN (SELECT sub FROM usersubs WHERE username=${req.username}) LIMIT ${userLimit}`;
-        if (returnHTML) {
-            userList = '<ul class="list-group">'
-            users.forEach((u) => { 
-                userList += `<li class="list-group-item container"><span class="col-auto me-3">${u.username}</span>`; 
-                userList += `<button class="btn btn-secondary col-auto" hx-post="/subscribe/${u.username}" hx-headers='js:{"Authorization":appState.token}' hx-swap="innerHTML">sub</button>`
-                userList += '</li>'
-            });
-            userList += "</ul>"
-            return res.status(200).send(userList);
-        } else {
-            return res.status(200).json(users);
-        }
-    } catch(e) {
-        console.log(e);
-        return res.status(500).send('user list generation error: ' + e);
-    }
-});
-
-const voteRule = {
-    username: 'string',
-    author: 'string',
-    tm : 'int',
-    isupvote: 'bool',
-    isreply : 'bool'
-}
-
-app.post('/vote/:author/:tm', verifyToken, async (req, res) => {
-    const vote = {username : req.username, 
-               author : req.params.author,
-               tm : req.params.tm,
-               isupvote : req.query.isupvote, 
-               isreply : req.query.isreply};
-    if(!validateParamsOrFail(vote, voteRule, "vote", res))
-        return;
-
-    score = vote.isupvote? 1 : -1;
-    try {
-        if (vote.isreply == 'true') {
-            await db.sql`INSERT INTO votesposts (author, tm, username, score)
-                VALUES(${vote.author}, to_timestamp(${vote.tm/1000}), ${username}, ${score})`;
-        } else {
-            await db.sql`INSERT INTO votesreplies (author, tm, username, score)
-                VALUES(${author}, to_timestamp(${tm/1000}), ${username}, ${score})`;
-        }
+        console.log("/vote POST req.params='", req.params, "' req.query='", req.query, "'");
+        const postid = parseIntOrFail(req.params.postid, 'postid', true, '/vote POST', res);
+        if (postid === false) return;
+        const score = parseIntOrFail(req.query.score, 'score', true, '/vote POST', res);
+        if (score === false) return;
+        // TODO should not be able to vote on your own post
+        await db.sql`INSERT INTO votes (postid, voterid, score)
+            VALUES(${postid}, ${req.userID}, ${score})`;
+        return res.status(201).json({postid, score});
     } catch(e) {
         console.log("/vote error ", e)
         return res.status(500).send("vote error: " + e);
     }
-    
-    return res.status(201).json(vote);
 });
 
-const replyRule = {
-    author: 'string', 
-    tm : 'int',
-    origauthor : 'string',
-    origtm : 'int',
-    replyauthor : 'string',
-    replytm : 'int',
-    msgbody : 'string'
-}
-app.post('/reply', verifyToken, async (req, res) => {
-    const msg = {author : req.username,
-               tm : Date.now(),
-               origauthor : req.body.origauthor,
-               origtm : req.body.origtm,
-               replyauthor : req.body.replyauthor,
-               replytm : req.body.replytm,
-               msgbody : req.body.msgbody };
-    if(!validateParamsOrFail(msg, replyRule, 'reply', res))
-        return;
-    const ipaddr = req.ip;
-    console.log("msg= ", msg);
+app.delete('/vote/:postid', verifyToken, async (req, res) => {
     try {
-        await db.sql`INSERT INTO replies (author, tm, body, origauthor, origtm, replyauthor, replytm, ipaddr)
-            VALUES(${msg.author}, to_timestamp(${msg.tm/1000}), ${msg.msgbody}, ${msg.origauthor}, to_timestamp(${msg.origtm/1000}), 
-            ${msg.replyauthor}, to_timestamp(${msg.replytm/1000}), ${ipaddr})`
+        console.log("/vote DELETE req.params='", req.params, "' req.query='", req.query, "'");
+        const postid = parseIntOrFail(req.params.postid, 'postid', true, '/vote DELETE', res);
+        if (postid === false) return;
+        await db.sql`DELETE FROM votes WHERE postid=${postid} 
+            AND voterid=${req.userID}`;
+        return res.status(200).json({postid});
     } catch(e) {
-        console.log("/reply error ", e)
-        return res.status(500).send('replyto error:' + e);
+        console.log("/vote error ", e)
+        return res.status(500).send("vote error: " + e);
     }
-    
-    return res.status(201).json({"tm":msg.tm});
 });
-
 
 app.listen(PORT, () => {
     console.log(`Server is running on http://localhost:${PORT}`);
