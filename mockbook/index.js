@@ -299,7 +299,7 @@ app.get('/feed', verifyToken, async (req, res) => {
              WHERE a.authorid IN (SELECT subid FROM usersubs WHERE userid=${userID}) 
                  AND a.origreplyid IS NULL 
                  AND a.tm > to_timestamp(${lastupdate/1000})
-             GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit}) 
+             GROUP BY a.postid, a.authorid, c.username, a.tm ORDER BY tm DESC LIMIT ${messagesLimit}) 
         SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
                a.body, a.score, count(b.origreplyid) AS numreplies 
         FROM cte1 a 

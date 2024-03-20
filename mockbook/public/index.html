@@ -128,9 +128,8 @@
         
         function resetAppState() {
             appState = { token : "", lastupdate : 0 }; 
-            appState.feed = [];
             appState.feedMap = new Map();
-            appState.newMessages = [];
+            appState.repliesMap = new Map();
             appState.userList = [];
             appState.username = null;
             appState.firstRender = true;
@@ -170,14 +169,8 @@
 
         async function doRequest(route, method, body, errHandler) {
             try {
-                const response = await fetch(baseURL+route, makeRequestObj(method, body));
+                const response = await fetch(route, makeRequestObj(method, body));
                 const status = response.status;
-                // console.log(`'${route}' ${method} status ${status}`);
-                if (statusExpected === undefined || statusExpected === null)
-                    statusExpected = 200;
-                if(status != statusExpected) {
-                    console.log(`'${route}' ${method} status ${status} expected ${statusExpected}`);
-                }
                 if (response.ok) {
                     r = await response.json();
                     return r;
@@ -209,7 +202,7 @@
             if (j != null) {
                 console.log(`successful login token=${j.token}`);
                 sessionStorage.setItem("token", j.token);
-                appState.username = userData.username;
+                appState.username = loginData.username;
                 appState.token = j.token;
                 changeState("feed");
             }
@@ -221,51 +214,105 @@
             changeState("login");
         }
 
-        async function postReply(replyid, origreplyid) {
+        async function postReply(postID) {
+            const m = getMessageByPostID(postID);
+            if(m == null) {
+                handleError(`postReply: m is null postID=${postID}`);
+                return;
+            }
+            let origreplyid = postID;
+            if (m.origreplyid != null && m.origreplyid != undefined) 
+                origreplyid = m.origreplyid;
+
             const replyToData = {
-                replyid: replyid,
+                replyid: postID,
                 origreplyid: origreplyid,
-                msgbody: document.getElementById(`${formName}body`).value
+                msgbody: document.getElementById(`reply${postID}body`).value
             };
 
-            const j = await doRequest('/post', 'POST', body, replyToData, (errMsg) => {
-                alert(`Error: ${errMsg}`);
+            const j = await doRequest(`/posts`, 'POST', replyToData, (errMsg) => {
+                handleError(errMsg);
             });
 
             if (j != null) {
-                cancelReply(formName);
+                deleteElement(`replyToSub${postID}`);
             } 
         }
 
-        function replyClick(postid, origreplyid) {
-            divName = `replydiv${postid}`;
-            div = document.getElementById(divName);
-            if (!(div === null || div === undefined)) {
-                console.log(`cancelling reply ${divName}`);
-                cancelReply(divName);
-                return;
-            }
-            rowDivName = `replyrow${postid}`;
-            rowDiv = document.getElementById(rowDivName);
-            console.log(`reply() rowDivName=${rowDivName} rowDiv=${rowDiv}`);
-            formName = `replyform${postid}`;
-            html = `<div id="${divName}" class="col">`;
-            html += `<div class="col-10"><form class="container-fluid" name="${formName}" id="${formName}">`;
-            html += '<div class="row">';
-            // html += `<label class="col-1 form-label">Reply:</label>
-            html += `<input class="ms-2 col-6 form-control" id="${formName}body">`;
-            html += '</div>';
-            html += `<div class="row"><button type="button" onclick="postReply(${postid}, ${replyid})" class="col-3 btn btn-sm btn-primary">Post</button>`;
-            html += `<button type="button" class="col-3 btn btn-sm btn-secondary" onclick="cancelReply('${divName}')">Cancel</button></div>`;
-            html += '<div id="replyresponse"></div>';
-            html += '</form></div></div>';
-            rowDiv.innerHTML = html;
+        function handleError(errMsg) {
+            console.log(errMsg);
+            alert(errMsg);
         }
 
-        function cancelReply(divName) {
-            console.log("cancelReply divName='", divName);
-            div = document.getElementById(divName);
-            div.remove();
+        function replyClick(postid) {
+            console.log(`replyClick ${postid}`)
+            replyDivName = `replyTo${postid}`;
+            replySubDivName = `replyToSub${postid}`;
+            replySubDiv = document.getElementById(replySubDivName);
+            if (!(replySubDiv === null || replySubDiv === undefined)) {
+                console.log(`cancelling reply ${replySubDivName}`);
+                deleteElement(replySubDivName);
+                return;
+            }
+            
+            html = `<div id="${replySubDivName}" class="col">`;
+            html += `<div class="col-10"><form class="container-fluid">`;
+            html += '<div class="row">';
+            // html += `<label class="col-1 form-label">Reply:</label>
+            html += `<input class="ms-2 col-6 form-control" id="reply${postid}body">`;
+            html += '</div>';
+            html += `<div class="row"><button type="button" onclick="postReply(${postid})" 
+                     class="col-3 btn btn-sm btn-primary">Post</button>`;
+            html += `<button type="button" class="col-3 btn btn-sm btn-secondary" 
+                     onclick="deleteElement('${replySubDivName}')">Cancel</button></div>`;
+            html += '<div id="replyresponse"></div>';
+            html += '</form></div></div>';
+            document.getElementById(replyDivName).innerHTML = html;
+        }
+
+        function deleteElement(eleName) {
+            console.log(`removing ${eleName}`);
+            ele = document.getElementById(eleName);
+            ele.remove();
+        }
+
+        function getMessageByPostID(postID) {
+            /*console.log(`getMessageByPostID ${postID} feedMap=`, appState.feedMap,
+                'repliesMap=', appState.repliesMap); */
+            if (appState.feedMap.has(postID))
+                return appState.feedMap.get(postID);
+            else if (appState.repliesMap.has(postID))
+                return appState.repliesMap.get(postID);
+            return null;
+        }
+
+        async function showReplies(postID) {
+            console.log(`showReplies ${postID}`);
+        
+            const m = getMessageByPostID(postID);
+            if (m != null) {
+                if (!m.hasOwnProperty("showReplies"))
+                    m.showReplies = true;
+                else // toggle
+                    m.showReplies = !m.showReplies;
+            } 
+            else {
+                console.log(`ERROR: showReplies: Could not find post ${postID} in maps`);
+                return;
+            }
+            document.getElementById(`replies${postID}`).hidden = !m.showReplies;
+
+            const j = await doRequest(`/replies/${postID}`, 'GET', null, (errMsg) => { 
+                alert(errMsg);
+                console.log(errMsg);
+            });
+
+            if (j != null) {
+                console.log("showReplies j=", j);
+                m.replies = j.posts;
+                div = document.getElementById(`post${postID}`);
+                div.innerHTML = renderMessageInner(m);
+            }
         }
 
         async function postNew() {
@@ -308,10 +355,9 @@
             }
         }
 
-        function renderMessage(m) {
-            const id = `msg${m.postid}`;
-            let x = `<div id="${id}" class="mb-3 mt-3 row container">`;
-            x += `<div class="row">`;
+        function renderMessageInner(m, indent=0) {
+            // console.log('renderMessageInner m=', m);
+            let x = `<div class="row">`;
             x += `  <span class="col"><h5>${m.author}</h5></span>`;
             x += `  <span class="col">${formatTimestamp(m.tm)}</span>`;
             x += `</div>`;
@@ -320,16 +366,18 @@
             x += '</div>';
             x += `<div class="row justify-content-between">`;
             // reply button
-            x += `  <span class="col-2"><button type="button" class="btn btn-outline-info" data-bs-toggle="button"`;
-            x += `       onclick="replyClick(${m.postid}, ${m.origreplyid})">Reply</button></span>`;
+            x += `  <span class="col-4"><button type="button" class="btn btn-outline-info" data-bs-toggle="button"`;
+            x += `       onclick="replyClick(${m.postid})">Reply</button></span>`;
+            x += `  <span class="col-2">Score: ${m.score}</span>`;
             // vote buttons 
-            x += '  <span class="col-2">'; 
-            x += `     <span class="container-fluid"><button type="button" class="btn btn-outline-success">^</button>`;
-            x += '          <button type="button" class="btn btn-outline-danger">v</button>';
+            x += '  <span class="col-4">'; 
+            x += `     <span class="container-fluid btn-group"><button type="button" id="vote${m.postid}up" class="btn btn-outline-success" 
+                            data-bs-toggle="button" onclick="vote(${m.postid}, 1)">^</button>`;
+            x += `          <button type="button" id="vote${m.postid}down" class="btn btn-outline-danger" data-bs-toggle="button" onclick="vote(${m.postid}, -1)">v</button>`;
             x += '     </span>';
             x += '  </span>';
             x += '</div>';
-            x += `<div class="row" id="replyrow${m.postid}"></div>`;
+            x += `<div class="row" id="replyTo${m.postid}"></div>`;
             // replies area
             x += '<div class="row mt-2">';
             x += `<span class="col-2">${m.numreplies} replies</span>`;
@@ -337,28 +385,44 @@
             x += `  onclick="showReplies(${m.postid})">Show</button></span>`;
             x += '</div>';
             x += `<div class="row" id="replies${m.postid}"></div>`;
-            if (!m.replies === undefined && !m.replies == null && m.replies.length > 0) {
-                for (let r of replies) {
-                    x += renderMessage(r, postid, origreplyid);
+            if (m.replies != undefined && m.replies != null && m.replies.length > 0) {
+                console.log(`renderMessageInner replies.length=${m.replies.length}`);
+                for (let r of m.replies) {
+                    x += renderMessage(r, indent+1);
                 };
             }
-            x += '</div></div>';
+            x += '</div>';
+            return x;
+        }
+
+        function renderMessage(m, indent=0) {
+            /* let origreplyid = m.origreplyid;
+            if (origreplyid === null || origreplyid === undefined)
+                origreplyid = m.postid; */
+            let x = `<div id="post${m.postid}" class="mb-3 mt-3 row container ms-${indent*2}">`;
+            x += renderMessageInner(m, indent);
+            x += '</div>';
             return x;
         }
         
         async function renderFeed() {
-            console.log("renderFeed new messages=", appState.newMessages.length);
+            // console.log("renderFeed new messages=", appState.newMessages.length);
+            feed = [];
+            appState.feedMap.forEach((m) => {feed.push(m)});
+            feed.sort((a, b) => {
+                if (a.tm == b.tm) return 0;
+                else if (a.tm < b.tm) return -1
+                return 1;
+            });
             feedHTML = "";
-            while(appState.newMessages.length > 0) {
-                m = appState.newMessages.pop();
-                feedHTML += renderMessage(m, m.author, m.tm);
-                m.needsRender = false;
-            }            
-            // prepend
-            if (!appState.firstRender)
-                feedHTML += document.getElementById("feed").innerHTML;
-            appState.firstRender = false;
+            feed.map((m) => {feedHTML += renderMessage(m);});
+            
             document.getElementById("feed").innerHTML = feedHTML;
+        }
+
+        function mergeReplies(oldMsg, newMsg) {
+            if (oldMsg.replies.length < newMsg.replies.length) 
+                oldMsg.replies = newMsg.replies;
         }
 
         function updateMessage(oldMsg, newMsg) {
@@ -367,33 +431,49 @@
                 m.needsRender = true;
                 oldMsg.body = newMsg.body;
             }
-            if (newMsg.hasOwnProperty("score") && oldMsg.score != newMsg.score) {
+            if (oldMsg.score != newMsg.score) {
                 m.needsRender = true;
                 oldMsg.score = newMsg.score;
             }
-            if (newMsg.hasOwnProperty("numreplies") && oldMsg.body != newMsg.score) {
+            if (oldMsg.numreplies != newMsg.numreplies) {
                 m.needsRender = true;
                 oldMsg.numreplies = newMsg.numreplies;
             }
+            mergeReplies(oldMsg, newMsg);
         }
 
         function mergeFeed(messages) {
-            for (m of messages) {
-                key = m.author + m.tm;
+            // console.log(`mergeFeed messages=${JSON.stringify(messages)}`);
+            for(let m of messages) {
+                fixMessage(m);
+                key = m.postid;
                 if (appState.feedMap.has(key)) {
-                    idx = appState.feedMap.get(key);
-                    console.log("mergeFeed idx=", idx);
-                    updateMessage(appState.feed[idx], m);
+                    mOld = appState.feedMap.get(key);
+                    console.log("mergeFeed mOld=", mOld);
+                    updateMessage(mOld, m);
                 } else {
-                    appState.feedMap.set(key, appState.feed.push(m) - 1);
-                    m.needsRender = true;
-                    appState.newMessages.push(m);
-                }                
+                    appState.feedMap.set(key, m);
+                }
             }
+            console.log('feedMap=', appState.feedMap);
         }
 
+        function fixMessage(m) {
+            try {
+                m.postid = parseInt(m.postid);
+                m.tm = parseInt(m.tm);
+                if(m.origreplyid != null)
+                    m.origreplyid = parseInt(m.origreplyid);
+                if(m.replyid != null)
+                    m.replyid = parseInt(m.replyid);
+                m.numreplies = parseInt(m.numreplies);
+                m.score = parseInt(m.score);
+            } catch(e) { }
+        }
+
+
         async function getFeed() {
-            console.log("getFeed");
+            console.log(`getFeed lastupdate=${appState.lastupdate}`);
 
             const rt = `/feed?lastupdate=${appState.lastupdate}`
             const j = await doRequest(rt, 'GET', null, (errMsg) => { 
@@ -429,17 +509,66 @@
         async function getUserList() {
             console.log("getUsers");
 
-            const j = await doRequest('/users', 'GET', null, (errMsg) => { 
+            const j = await doRequest('/subs?mode=notsubs', 'GET', null, (errMsg) => { 
                 alert(errMsg);
                 console.log(errMsg);
             });
 
             if (j != null) {
-                appState.userList = j;
+                appState.userList = j.users;
                 await renderUserList();
             }
 
             setTimeout("getUserList()", 60000);
+        }
+
+        async function vote(postID, score) {
+            const m = getMessageByPostID(postID);
+            if (m == null) {
+                console.log(`vote: could not find message ${postID} in message maps`);
+                return;
+            }
+            
+            const voteup = document.getElementById(`vote${postID}up`);
+            const votedown = document.getElementById(`vote${postID}down`);
+            console.log("voteup=", voteup);
+            console.log("votedown=", votedown);
+            let thisVote = voteup;
+            let otherVote = votedown;
+            if(score == -1) {
+                thisVote = votedown;
+                otherVote = voteup;
+            }
+            let delScore = false;
+            if (!m.hasOwnProperty('vote')) {
+                m.vote = 0;
+            } else {
+                delScore = true;
+                if (m.vote == score) {
+                    score = 0;
+                }
+            }
+            // delete old score first
+            if (delScore) {
+                await doRequest(`/vote/${postID}`, 'DELETE', null, (errMsg) => { 
+                    alert(errMsg);
+                    console.log(errMsg);
+                });
+                otherVote.setAttribute("aria-pressed", false);
+                // remove 'active' from 
+                otherVote.classList.remove("active");
+            }
+            // post new score if necessary
+            if (score != 0) {
+                await doRequest(`/vote/${postID}?score=${score}`, 'POST', null, (errMsg) => { 
+                    alert(errMsg);
+                    console.log(errMsg);
+                });
+            }
+            const diff = m.vote;
+            // set new score based on vote
+            m.score += diff;
+            renderMessageInner(m);
         }
     </script>
 </body>
