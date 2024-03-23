@@ -7,27 +7,38 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = 'your_jwt_secret';
 const db = require('./db.js');
+const cors = require('cors');
 
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from the public directory
+app.use(cors());
 
 startTime = Date.now();
+
+const curDateStr = () => {
+    return new Date(Date.now()).toLocaleString();
+}
 
 // Middleware to verify JWT token
 const verifyToken = (req, res, next) => {
     const token = req.headers['authorization'];
     if (!token) {
-        console.log(`verifyToken no token`);
-        return res.status(401).send('Unauthorized: No token provided');
+        console.log(curDateStr(), " verifyToken no token");
+        // return res.status(401).send('Unauthorized: No token provided');
+        req.userID = 0;
+        next();
     }
 
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
         if (err) {
-            console.log(`verifyToken invalid token ${token}`);
-            return res.status(401).send('Unauthorized: Invalid token');
+            console.log(curDateStr(), `verifyToken invalid token ${token}`);
+            req.userID = 0;
+            next();
+            // return res.status(401).send('Unauthorized: Invalid token');
+        } else {
+            req.userID = decoded.id;
+            next();
         }
-        req.userID = decoded.id;
-        next();
     });
 };
 
@@ -52,6 +63,7 @@ function parseIntOrFail(x, paramName, isRequired, endpt, res) {
 app.post('/login', async (req, res) => {
     try {
         const { username, password } = req.body;
+        console.log(curDateStr(), `login username=${username}`);
         const ipaddr = req.ip;
         const users = await db.sql`SELECT userid, passhash FROM users WHERE username=${ username }`;
         // console.log(`login users= ${JSON.stringify(users)}`);
@@ -88,7 +100,7 @@ app.post('/auth2fa', async (req, res) => {
 // registration route
 app.post('/register', async (req, res) => {
     try {
-        console.log("/register POST req.params='", req.params, "'");
+        console.log(curDateStr(), "/register POST req.params='", req.params, "'");
         const { username, password, password2, email, auth2fa } = req.body;
     
         if(password != password2) {
@@ -110,7 +122,8 @@ app.post('/register', async (req, res) => {
 // Route to create a new post
 app.post('/posts', verifyToken, async (req, res) => {
     try {
-        console.log("/posts POST req.params= '", req.params, "' req.body='", req.body, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/posts POST req.params= '", req.params, "' req.body='", req.body, "'");
         msgbody = req.body.msgbody;
         replyid = parseIntOrFail(req.body.replyid, 'replyid', false, '/posts POST', res);
         // return on failure (status already set)
@@ -147,7 +160,8 @@ app.post('/posts', verifyToken, async (req, res) => {
 // fetch user posts based on timestamp
 app.get('/posts/:authorID/:tm', verifyToken, async (req, res) => {
     try {
-        console.log("/posts GET req.params='", req.params, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/posts GET req.params='", req.params, "'");
         const postsLimit=100;
         let {authorID, tm} = req.params;
         tm = parseIntOrFail(tm, 'tm', true, '/posts GET', res);
@@ -170,7 +184,7 @@ app.get('/posts/:authorID/:tm', verifyToken, async (req, res) => {
 // fetch replies based on postid
 app.get('/replies/:postid', verifyToken, async (req, res) => {
     try {
-        console.log("/replies GET req.params= '", req.params, "' req.query= '", req.query, "'");
+        console.log(curDateStr(), "/replies GET req.params= '", req.params, "' req.query= '", req.query, "'");
         const postID = parseIntOrFail(req.params.postid, 'postid', true, '/replies', res);
         if(postID == false) return;
         let tm1 = parseIntOrFail(req.query.tmlow, 'tmlow', false, '/replies GET', res);
@@ -203,7 +217,8 @@ app.get('/replies/:postid', verifyToken, async (req, res) => {
 // Route to remove subscription 
 app.delete('/subs/:subid',  verifyToken, async (req, res) => {
     try {
-        console.log("/subs DELETE req.params='", req.params, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/subs DELETE req.params='", req.params, "'");
         const subID = parseIntOrFail(req.params.subid, 'subid', true, '/subs DELETE', res);
         if(subID === false) return;
         if (req.userID === subID) {
@@ -220,7 +235,8 @@ app.delete('/subs/:subid',  verifyToken, async (req, res) => {
 // Route to subscribe to another user
 app.post('/subs/:subid', verifyToken, async (req, res) => {
     try {
-        console.log("/subs POST req.params='", req.params, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/subs POST req.params='", req.params, "'");
         const userID = req.userID;
         const subID = parseIntOrFail(req.params.subid, 'subid', true, '/subs', res);
         if (subID === false) return;
@@ -242,7 +258,8 @@ app.post('/subs/:subid', verifyToken, async (req, res) => {
 // get list of users, to which user is either or not subscribed
 app.get('/subs', verifyToken, async (req, res) => {
     try {
-        console.log("/subs GET req.query='", req.query, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/subs GET req.query='", req.query, "'");
         const mode = req.query.mode;
         if(!(mode === 'subs' || mode === 'notsubs')) {
             return res.status(500).send(`'mode' must be either 'subs' or 'notsubs' got '${mode}'`);
@@ -274,8 +291,8 @@ app.get('/subs', verifyToken, async (req, res) => {
 // Route to get user's feed
 app.get('/feed', verifyToken, async (req, res) => {
     try {
-        console.log("/feed GET req.query='", req.query, "'");
-    
+        console.log(curDateStr(), "/feed GET req.query='", req.query, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
         const nDays = 60;
         const messagesLimit = 10;
         // last update time
@@ -290,8 +307,9 @@ app.get('/feed', verifyToken, async (req, res) => {
         // const username = req.params.username;
         const userID = req.userID;
         console.log(`feed userID='${userID}' lastupdate=${lastupdate}`);
-    
-        const messageFeed = await db.sql`WITH cte1 as 
+        let messageFeed=null;
+        if(req.userID != 0) {
+            messageFeed = await db.sql`WITH cte1 as 
             (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
              FROM posts a 
              LEFT JOIN votes b ON a.postid=b.postid 
@@ -306,8 +324,26 @@ app.get('/feed', verifyToken, async (req, res) => {
         LEFT JOIN posts b ON a.postid=b.origreplyid 
         GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
         ORDER BY tm DESC`;
+        } 
+        // feed for user who is not logged in
+        else { 
+            messageFeed = await db.sql`WITH cte1 as 
+            (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
+             FROM posts a 
+             LEFT JOIN votes b ON a.postid=b.postid 
+             LEFT JOIN users c ON a.authorid=c.userid 
+             WHERE a.origreplyid IS NULL 
+                 AND a.tm > to_timestamp(${lastupdate/1000})
+             GROUP BY a.postid, a.authorid, c.username, a.tm ORDER BY tm DESC LIMIT ${messagesLimit}) 
+        SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
+               a.body, a.score, count(b.origreplyid) AS numreplies 
+        FROM cte1 a 
+        LEFT JOIN posts b ON a.postid=b.origreplyid 
+        GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
+        ORDER BY tm DESC`;
+        }
 
-        var feed = [];
+        let feed = [];
         tm = Date.now();
         console.log("messageFeed.length= ", messageFeed.length);
         const f = async () => {
@@ -328,7 +364,8 @@ app.get('/feed', verifyToken, async (req, res) => {
 
 app.post('/vote/:postid', verifyToken, async (req, res) => {
     try {
-        console.log("/vote POST req.params='", req.params, "' req.query='", req.query, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/vote POST req.params='", req.params, "' req.query='", req.query, "'");
         const postid = parseIntOrFail(req.params.postid, 'postid', true, '/vote POST', res);
         if (postid === false) return;
         const score = parseIntOrFail(req.query.score, 'score', true, '/vote POST', res);
@@ -345,7 +382,8 @@ app.post('/vote/:postid', verifyToken, async (req, res) => {
 
 app.delete('/vote/:postid', verifyToken, async (req, res) => {
     try {
-        console.log("/vote DELETE req.params='", req.params, "' req.query='", req.query, "'");
+        if(req.userID == 0) return res.status(401).send("Valid login required");
+        console.log(curDateStr(), "/vote DELETE req.params='", req.params, "' req.query='", req.query, "'");
         const postid = parseIntOrFail(req.params.postid, 'postid', true, '/vote DELETE', res);
         if (postid === false) return;
         await db.sql`DELETE FROM votes WHERE postid=${postid} 
