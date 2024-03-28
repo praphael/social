@@ -8,7 +8,7 @@ const PostMsg = (authToken) => {
       <div className="container-fluid">
         <div className="row">
             <div className="col-auto">
-              <label className="form-label" for="text">Say something:</label>
+              <label className="form-label" htmlFor="text">Say something:</label>
             </div>
             <div className="col-8">
               <input className="form-control" type="text" id="newPostText"/>

@@ -20,10 +20,10 @@ function makeRequestObj(method, body, authToken="") {
 async function doRequest(route, method, body, authToken, errHandler) {
     try {
         const requrl = baseURL + route;
-        console.log("doRequest(): fetching '", requrl, "'", " body='", body, "'");
+        //console.log("doRequest(): fetching '", requrl, "'", " body='", body, "'");
         const response = await fetch(requrl, makeRequestObj(method, body, authToken));
         const status = response.status;
-        console.log("doRequest(): status= ", status);
+        //console.log("doRequest(): status= ", status);
         if (response.ok) {
             const r = await response.json();
             return r;

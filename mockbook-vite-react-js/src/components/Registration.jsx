@@ -20,21 +20,20 @@ const Registration = () => {
                 <input className="form-control" type="text" id="regemail" name="regemail"/>
             </div>
             <div className="row mb-3">
-                <label className="form-label" for="regpassword">Desired Password:</label>
+                <label className="form-label" htmlFor="regpassword">Desired Password:</label>
                 <input className="form-control" type="password" id="regpassword" name="regpassword"/>
             </div>
             <div className="row mb-3">
-                <label className="form-label" for="regpassword2">Re-enter Password:</label>
+                <label className="form-label" htmlFor="regpassword2">Re-enter Password:</label>
                 <input className="form-control" type="password" id="regpassword2" name="regpassword2"/>
             </div>
             <div className="row mt-3">
-                <button className="col-md-4 btn btn-primary" type="button" onclick={register()}>Register</button>
+                <button className="col-md-4 btn btn-primary" type="button" onClick={register()}>Register</button>
                 <span className="col-lg-4"></span>
             </div>
             <div className="row mt-3">
-                <span className="col-sm-4 me-1 mb-1">Already registered?
-                    <a href="/login" className="col-sm-4 btn btn-link">Login</a>
-                </span>
+                <span className="col-sm-4 me-1 mb-1">Already registered?</span>
+                <a className="col-sm-4" href="/login">Login</a>
             </div>
             <div id="regresp" hidden></div>
         </form>

@@ -25,10 +25,8 @@ const Login = ({setUserInfo}) => {
                 <span className="col-lg-6"></span>
             </div>
             <div className="row mt-3">
-                <span className="col-sm-4 me-1 mb-1">New User?
-                  <a href="/register" className="btn btn-link" type="button">Register</a>
-                </span>
-                <span className="col-lg-6"></span>
+                <span className="col-sm-4 me-1 mb-1">New User?</span>
+                <a className="col-sm-4" href="/register">Register</a>
             </div>
             <div id="loginresp" hidden></div>
         </form>

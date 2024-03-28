@@ -26,20 +26,20 @@ const verifyToken = (req, res, next) => {
         console.log(curDateStr(), " verifyToken no token");
         // return res.status(401).send('Unauthorized: No token provided');
         req.userID = 0;
-        next();
     }
-
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) {
-            console.log(curDateStr(), `verifyToken invalid token ${token}`);
-            req.userID = 0;
-            next();
+    else {
+        jwt.verify(token, JWT_SECRET, (err, decoded) => {
+            if (err) {
+                console.log(curDateStr(), `verifyToken invalid token ${token}`);
+                req.userID = 0;
             // return res.status(401).send('Unauthorized: Invalid token');
-        } else {
-            req.userID = decoded.id;
-            next();
-        }
-    });
+            } else {
+                req.userID = decoded.id;
+                
+            }
+        });
+    }
+    next();
 };
 
 function parseIntOrFail(x, paramName, isRequired, endpt, res) {
@@ -149,7 +149,9 @@ app.post('/posts', verifyToken, async (req, res) => {
         await db.sql`INSERT INTO posts (authorid, tm, body, ipaddr, origreplyid, replyid)
             VALUES(${req.userID}, to_timestamp(${tm/1000}), ${msgbody}, ${ipaddr},
             ${origreplyid}, ${replyid})`;
-        return res.status(201).json({tm: tm});
+
+        const r = await db.sql`SELECT postid FROM posts WHERE authorid=${req.userID} AND tm=to_timestamp(${tm/1000})`;
+        return res.status(201).json({tm: tm, postid:r[0].postid});
     } catch(e) {
         console.log("/posts error ", e);
         return res.status(500).send("messages error: " + e);
@@ -157,34 +159,12 @@ app.post('/posts', verifyToken, async (req, res) => {
     // return res.status(201).json(message);
 });
 
-// fetch user posts based on timestamp
-app.get('/posts/:authorID/:tm', verifyToken, async (req, res) => {
+// fetch post and replies based on postid
+// TODO need to validate user allowed to fetch post
+app.get('/posts/:postid', verifyToken, async (req, res) => {
     try {
-        if(req.userID == 0) return res.status(401).send("Valid login required");
-        console.log(curDateStr(), "/posts GET req.params='", req.params, "'");
-        const postsLimit=100;
-        let {authorID, tm} = req.params;
-        tm = parseIntOrFail(tm, 'tm', true, '/posts GET', res);
-        authorID = parseIntOrFail(authorID, 'authorID', true, '/posts GET', res);
-        console.log(`/posts authorID=${authorID} tm=${tm}`);
-        if(!(authorID == 0 || authorID == req.userID)) {
-            return res.status(400).send("/posts GET only authorID==0 or authorID==req.userID supported for now!");
-        }
-        authorID = req.userID;
-        
-        const r = await db.sql`SELECT * FROM posts WHERE authorid=${authorID} 
-            AND tm>=to_timestamp(${tm/1000}) LIMIT ${postsLimit}`;
-        return res.status(200).json({posts:r});
-    } catch(e) {
-        console.log("/posts GET error ", e);
-        return res.status(500).send("posts GET error: " + e);
-    }
-});
-
-// fetch replies based on postid
-app.get('/replies/:postid', verifyToken, async (req, res) => {
-    try {
-        console.log(curDateStr(), "/replies GET req.params= '", req.params, "' req.query= '", req.query, "'");
+        console.log(curDateStr(), "/posts GET req.params= '", req.params, "' req.query= '", req.query, "'");
+        // if(req.userID == 0) return res.status(401).send("Valid login required");
         const postID = parseIntOrFail(req.params.postid, 'postid', true, '/replies', res);
         if(postID == false) return;
         let tm1 = parseIntOrFail(req.query.tmlow, 'tmlow', false, '/replies GET', res);
@@ -192,13 +172,37 @@ app.get('/replies/:postid', verifyToken, async (req, res) => {
         if(tm1 == null) tm1 = 0;
         if(tm2 == null) tm2 = Date.now();
         const messagesLimit = 200;
+        const tm = Date.now();
         // TODO only allow query if userID is subscribed
-        const r = await db.sql`WITH cte1 as 
+        let p = null;
+        let p2 = null;
+        // logged in
+        if(req.userID != 0) {
+            p = db.sql`WITH cte1 as 
+                (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
+                FROM posts a
+                LEFT JOIN votes b ON a.postid=b.postid
+                LEFT JOIN users c ON a.authorid=c.userid
+                WHERE a.origreplyid=${postID}
+                AND a.tm BETWEEN to_timestamp(${tm1/1000}) AND to_timestamp(${tm2/1000})
+                GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit})
+            SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
+                a.body, a.score, count(b.origreplyid) AS numreplies
+            FROM cte1 a
+            LEFT JOIN posts b ON a.postid=b.replyid
+            GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
+            ORDER BY tm DESC`
+            p2 = db.sql`SELECT  authorid, trunc(1000*extract(epoch from tm)) as tm, postid, origreplyid, replyid, body from posts WHERE postid=${postID}`
+        } 
+        // not logged in
+        else {
+            p = db.sql`WITH cte1 as 
             (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
             FROM posts a
             LEFT JOIN votes b ON a.postid=b.postid
             LEFT JOIN users c ON a.authorid=c.userid
-            WHERE a.replyid=${postID}
+            WHERE a.origreplyid=${postID}
+            AND a.visibility > 2
             AND a.tm BETWEEN to_timestamp(${tm1/1000}) AND to_timestamp(${tm2/1000})
             GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit})
         SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
@@ -207,11 +211,21 @@ app.get('/replies/:postid', verifyToken, async (req, res) => {
         LEFT JOIN posts b ON a.postid=b.replyid
         GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
         ORDER BY tm DESC`
-        return res.status(200).json({posts:r});
+        p2 = db.sql`SELECT authorid, trunc(1000*extract(epoch from tm)) as tm, postid, origreplyid, replyid, body from posts WHERE postid=${postID} AND visibility > 2`;
+        }
+        
+        const r = await p;
+        const r2 = await p2;
+        return res.status(200).json({post:r2[0], replies:r, lastupdate:tm});
     } catch(e) {
         console.log("/posts GET error ", e);
         return res.status(500).send("posts GET error: " + e);
     }
+});
+
+// delete post
+app.delete('/posts/:postid', verifyToken, async (req, res) => {
+
 });
 
 // Route to remove subscription 
@@ -292,7 +306,7 @@ app.get('/subs', verifyToken, async (req, res) => {
 app.get('/feed', verifyToken, async (req, res) => {
     try {
         console.log(curDateStr(), "/feed GET req.query='", req.query, "'");
-        if(req.userID == 0) return res.status(401).send("Valid login required");
+        // if(req.userID == 0) return res.status(401).send("Valid login required");
         const nDays = 60;
         const messagesLimit = 10;
         // last update time
@@ -334,6 +348,7 @@ app.get('/feed', verifyToken, async (req, res) => {
              LEFT JOIN users c ON a.authorid=c.userid 
              WHERE a.origreplyid IS NULL 
                  AND a.tm > to_timestamp(${lastupdate/1000})
+                 AND a.visibility > 2
              GROUP BY a.postid, a.authorid, c.username, a.tm ORDER BY tm DESC LIMIT ${messagesLimit}) 
         SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
                a.body, a.score, count(b.origreplyid) AS numreplies 

@@ -1,37 +1,78 @@
 import React from 'react'
-import { doRequest, handleRequestError } from '../js/requests'
-
+import { useState, useEffect } from 'react';
+import { doRequest, handleRequestError, makeRequestObj } from '../js/requests'
 import Vote from './Vote';
-import Reply from './Reply';
+import ReplyTo from './ReplyTo';
 
+const ReplyToOrBlank = ({isShowReplyTo, userInfo, postID, origReplyID}) => {
+    if(isShowReplyTo)
+        return (<ReplyTo userInfo={userInfo} postID={postID} origReplyID={origReplyID} />)
+    return null;
+}
 
-const Message = ({authToken, m, depth=0}) => {
+const RepliesOrBlank = ({showReplies, userInfo, postID, replies, updateMsg, depth}) => {
+    // console.log("RepliesOrBlank showReplies=", showReplies, " postID=", postID, "replies=", replies);
+    if(showReplies)
+        return (
+            <div className="row" id={`"replies${postID}"`}>
+                {replies != undefined? replies.map((r)=>(<Message key={r.postid} userInfo={userInfo} msg={r} updateMsg={updateMsg} depth={depth+1}/>)) : null }
+            </div>)
+    return null;
+}
+const Message = ({userInfo, msg, updateMsg, depth=0}) => {
+  const [showReplyTo, setShowReplyTo] = useState(false);
+  const [showReplies, setShowReplies] = useState(false);
+
+  useEffect(() => {
+    const id = setInterval(async () => {
+        if(showReplies) {
+            const j = await getUpdatedMsgAndReplies(userInfo, msg.postid, msg.lastUpdate);
+            if(j != null && j != undefined) {
+                // console.log("j=", j);
+                let newMsg = j.post;
+                newMsg.replies = j.replies;
+                // console.log("newMsg.replies=", newMsg.replies);
+                newMsg.lastUpdate = j.lastUpdate;
+                updateMsg(newMsg);
+            }
+        }
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const setShowRepliesMW = (isShowReplies) => {
+    console.log(`setShowRepliesMW= ${isShowReplies}`);
+    setShowReplies(!isShowReplies);
+  }
+  const indent=depth;
+  if(showReplies)
+        console.log(`Message ${msg.postid} showReplies=${showReplies}`)
+  //console.log("Message depth=", depth, "msg.replies=", msg.replies);
   return (
-    <div id={`"post${m.postid}"`} className="mb-3 mt-3 row container ms-${indent*2}">
+    <div id={`"post${msg.postid}"`} className={`"mb-3 mt-3 row container ms-${indent*2}"`}>
         <div className="row">
-            <span className="col"><h5>{m.author}</h5></span>
-            <span className="col">{formatTimestamp(m.tm)}</span>
+            <span className="col"><h5>{msg.author}</h5></span>
+            <span className="col">{formatTimestamp(msg.tm)}</span>
         </div>
         <div className="row">
-            <div className="col-auto mb-3 mt-3">{m.body}</div>
+            <div className="col-auto mb-3 mt-3">{msg.body}</div>
         </div>
         <div className="row justify-content-between">
             <span className="col-4"><button type="button" className="btn btn-outline-info" data-bs-toggle="button"
-            onClick={ ()=>(replyClick(m.postid)) }>Reply</button></span>
-            <span className="col-2">Score: {m.score}</span>
+                aria-pressed={showReplyTo} onClick={ ()=>(setShowReplyTo(!showReplyTo)) }>Reply</button></span>
+            <span className="col-2">Score: {msg.score}</span>
             <span className="col-4"> 
-                <Vote authToken={authToken} postID={m.postid}/>
+                <Vote userInfo={userInfo} postID={msg.postid}/>
             </span>
         </div>
-        <Reply authToken={authToken} m={m.postid} origReplyID={m.origreplyid} />
+        <ReplyToOrBlank isShowReplyTo={showReplyTo} userInfo={userInfo} postID={msg.postid} origReplyID={msg.origreplyid} />
+        
         <div className="row mt-2">
-            <span className="col-2">{m.numreplies} replies</span>
+            <span className="col-2">{msg.numreplies} replies</span>
             <span className="col-2"><button className="btn btn-sm btn-outline-light" data-bs-toggle="button"
-                onClick={ ()=>(showReplies(m.postid) )}>Show</button></span>
+                aria-pressed={showReplies} onClick={ ()=>(setShowRepliesMW(showReplies) )}>Show</button></span>
         </div>
-        <div class="row" id={`"replies${m.postid}"`}>
-            {m.replies.map((r)=>(<Message key={m.postid} authToken={authToken} m={r} depth={depth+1}/>))}
-        </div>
+        <RepliesOrBlank showReplies={showReplies} userInfo={userInfo} postID={msg.postid} replies={msg.replies} updateMsg={updateMsg} depth={depth} />
     </div>
   )
 }
@@ -58,6 +99,15 @@ function formatTimestamp(ts) {
     }
 }
 
-function showReplies(authToken, postID) {
+async function getUpdatedMsgAndReplies(userInfo, postID, lastUpdate) {
+    //console.log(`getUpdatedMsgAndReplies lastupdate=${lastUpdate} userInfo=`, userInfo);
 
+    const rt = `/posts/${postID}`;
+    const j = await doRequest(rt, 'GET', null, userInfo.authToken, (err) => { 
+        handleRequestError(err);
+    });
+
+    // console.log("getUpdatedMsgAndReplies: j=", j);
+
+    return j;
 }

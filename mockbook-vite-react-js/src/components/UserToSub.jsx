@@ -6,7 +6,8 @@ const UserToSub = ({ authToken, sub }) => {
   return (
     <div className="row mb-3 justify-content-between border-top border-right">
         <span className="col-1 border-left">{ sub.username }</span>
-        <span className="col-1"><button className="btn btn-secondary" onClick={`"subscribe(${authToken, sub})"`}>sub</button></span>
+        <span className="col-1"><button className="btn btn-secondary" 
+          onClick={()=>subscribe(authToken, sub)}>sub</button></span>
     </div>
   )
 }

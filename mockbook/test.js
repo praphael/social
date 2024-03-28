@@ -79,20 +79,18 @@ async function testSubs(token) {
 
 async function testPost(token, userID, feed) {
     const body= { msgbody : "foo" };
-    const [{tm}, t1] = await doRequest('/posts', 'POST', body, 'json', token, 201);
+    const [{tm, postid}, t1] = await doRequest('/posts', 'POST', body, 'json', token, 201);
+    console.log(`testPost postid=${postid}`);
     // tests get post
-    const [{posts:posts1}, t2] = await doRequest(`/posts/0/${tm}`, 'GET', null, 'json', token);
-    const postID1 = parseInt(posts1[0].postid);
-    const [{posts:posts2}, t3] = await doRequest(`/posts/${userID}/${tm}`, 'GET', null, 'json', token);
-    const postID2 = parseInt(posts2[0].postid);
-    if(postID1!=postID2)
-        console.log(`FAIL postID1 ${postID1} != postID2 ${postID2}`);
-    // console.log(`feed= ${feed}`);
-    const postID = parseInt(feed[0].postid);
+    const [{post:post1}, t2] = await doRequest(`/posts/${postid}`, 'GET', null, 'json', token);
+    const postID = parseInt(post1[0].postid);
     
     // test reply
     const body2 = { msgbody : "fooreply", origreplyid:postID, replyid:postID };
-    const [{tm2}, t4] = await doRequest('/posts', 'POST', body2, 'json', token, 201);
+    const [{tm2, postID2}, t4] = await doRequest('/posts', 'POST', body2, 'json', token, 201);
+    const [{post:post2}, t5] = await doRequest(`/posts/${postID}`, 'GET', null, 'json', token);
+    const postID3 = parseInt(post2[0].postid);
+
 }
 
 async function testVote(token, feed) {
@@ -108,7 +106,7 @@ async function testVote(token, feed) {
 async function getAllReplies(token, postID) {
     [r, rtxt] = await doRequest(`/replies/${postID}`, 'GET', null, 'json', token);
     //console.log(`testReplies: post ${postID} replies length='${r.posts.length}'`);
-    let numposts=r.posts.length;
+    let numposts = r.posts.length;
     //if(expectedreplies > 0)
     //    console.log(`testReplies: replies expected=${expectedreplies} actual=${actual}`);
     if(r.posts.length > 0) {
