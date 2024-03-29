@@ -124,20 +124,30 @@ app.post('/posts', verifyToken, async (req, res) => {
     try {
         if(req.userID == 0) return res.status(401).send("Valid login required");
         console.log(curDateStr(), "/posts POST req.params= '", req.params, "' req.body='", req.body, "'");
-        msgbody = req.body.msgbody;
-        replyid = parseIntOrFail(req.body.replyid, 'replyid', false, '/posts POST', res);
+        if(!req.body.hasOwnProperty("msgbody"))
+            return res.status(500).send("/posts POST 'msgbody' must be defined");
+        const msgbody = req.body.msgbody;
+        if(msgbody === "")
+            return res.status(500).send("/posts POST 'msgbody' must not be blank");
+
+        let visibility = parseIntOrFail(req.body.visibility, 'visibility', false, '/posts POST', res);
+        if(visibility === false) return;
+        else if(visibility === null) visibility = 2;
+
+        let replyid = parseIntOrFail(req.body.replyid, 'replyid', false, '/posts POST', res);
         // return on failure (status already set)
         // replyid was present but parsed failed
         if(replyid === false) return;
         
-        // required if we successfully parsed replyid, otherwie not required
+        // required if we successfully parsed replyid, otherwise not required
         const isRequired = (replyid != null);
-        origreplyid = parseIntOrFail(req.body.origreplyid, 'origreplyid', isRequired, '/posts POST', res);
+        const replyid_top_level = parseIntOrFail(req.body.replyid_top_level, 
+            'replyid_top_level', isRequired, '/posts POST', res);
         // return on failure (status already set)
-        if(origreplyid === false) return;
+        if(replyid_top_level === false) return;
         // or if parse of origreplyid succeeded and replyid did not 
-        if(origreplyid != null && replyid === null) {
-            const msg = `'origreplyid'='${origreplyid}' and 'replyid'='${replydid}' 
+        if(replyid_top_level != null && replyid === null) {
+            const msg = `'replyid_top_level'='${replyid_top_level}' and 'replyid'='${replydid}' 
             must both be present and valid or both not present in request`;
             return res.status(400).send(msg);
         }
@@ -145,13 +155,20 @@ app.post('/posts', verifyToken, async (req, res) => {
         const ipaddr = req.ip;
         const tm = Date.now();
         console.log("posts tm=", tm);
-    
-        await db.sql`INSERT INTO posts (authorid, tm, body, ipaddr, origreplyid, replyid)
-            VALUES(${req.userID}, to_timestamp(${tm/1000}), ${msgbody}, ${ipaddr},
-            ${origreplyid}, ${replyid})`;
-
-        const r = await db.sql`SELECT postid FROM posts WHERE authorid=${req.userID} AND tm=to_timestamp(${tm/1000})`;
-        return res.status(201).json({tm: tm, postid:r[0].postid});
+        let r = null;
+        await db.sql.begin(async (sql) => {
+            await sql`INSERT INTO posts (authorid, tm, body, ipaddr, replyid_top_level, replyid, 
+                visibility, replies, replies_top_level, score)
+                VALUES(${req.userID}, to_timestamp(${tm/1000}), ${msgbody}, ${ipaddr},
+                ${replyid_top_level}, ${replyid}, ${visibility}, 0, 0, 0)`;
+            r = await sql`SELECT postid FROM posts WHERE authorid=${req.userID} AND tm=to_timestamp(${tm/1000})`;
+            if(replyid != null) {
+                await sql`UPDATE posts SET replies=replies+1 WHERE postid=${replyid}`;
+                await sql`UPDATE posts SET replies_top_level=replies_top_level+1 WHERE postid=${replyid_top_level}`;
+            }
+        });
+        
+        return res.status(201).json({postid:r[0].postid, tm: tm});
     } catch(e) {
         console.log("/posts error ", e);
         return res.status(500).send("messages error: " + e);
@@ -159,77 +176,154 @@ app.post('/posts', verifyToken, async (req, res) => {
     // return res.status(201).json(message);
 });
 
-// fetch post and replies based on postid
+// fetch post based on postid
 // TODO need to validate user allowed to fetch post
 app.get('/posts/:postid', verifyToken, async (req, res) => {
     try {
         console.log(curDateStr(), "/posts GET req.params= '", req.params, "' req.query= '", req.query, "'");
         // if(req.userID == 0) return res.status(401).send("Valid login required");
-        const postID = parseIntOrFail(req.params.postid, 'postid', true, '/replies', res);
+        const postID = parseIntOrFail(req.params.postid, 'postid', true, '/posts', res);
         if(postID == false) return;
-        let tm1 = parseIntOrFail(req.query.tmlow, 'tmlow', false, '/replies GET', res);
-        let tm2 = parseIntOrFail(req.query.tmhigh, 'tmhigh', false, '/replies GET', res);
-        if(tm1 == null) tm1 = 0;
-        if(tm2 == null) tm2 = Date.now();
-        const messagesLimit = 200;
         const tm = Date.now();
         // TODO only allow query if userID is subscribed
-        let p = null;
-        let p2 = null;
-        // logged in
-        if(req.userID != 0) {
-            p = db.sql`WITH cte1 as 
-                (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
-                FROM posts a
-                LEFT JOIN votes b ON a.postid=b.postid
-                LEFT JOIN users c ON a.authorid=c.userid
-                WHERE a.origreplyid=${postID}
-                AND a.tm BETWEEN to_timestamp(${tm1/1000}) AND to_timestamp(${tm2/1000})
-                GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit})
-            SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
-                a.body, a.score, count(b.origreplyid) AS numreplies
-            FROM cte1 a
-            LEFT JOIN posts b ON a.postid=b.replyid
-            GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
-            ORDER BY tm DESC`
-            p2 = db.sql`SELECT  authorid, trunc(1000*extract(epoch from tm)) as tm, postid, origreplyid, replyid, body from posts WHERE postid=${postID}`
-        } 
-        // not logged in
-        else {
-            p = db.sql`WITH cte1 as 
-            (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
+        const r = await db.sql`SELECT a.postid, a.authorid, b.username, 
+            trunc(1000*extract(epoch from tm)) as tm, 
+            trunc(1000*extract(epoch from tm_last_body_edit)) as tm_last_body_edit, 
+            a.body, a.score, a.replies as numreplies, a.replies_top_level as numreplies_top_level
             FROM posts a
-            LEFT JOIN votes b ON a.postid=b.postid
-            LEFT JOIN users c ON a.authorid=c.userid
-            WHERE a.origreplyid=${postID}
-            AND a.visibility > 2
-            AND a.tm BETWEEN to_timestamp(${tm1/1000}) AND to_timestamp(${tm2/1000})
-            GROUP BY a.postid, a.authorid, c.username, a.tm LIMIT ${messagesLimit})
-        SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
-            a.body, a.score, count(b.origreplyid) AS numreplies
-        FROM cte1 a
-        LEFT JOIN posts b ON a.postid=b.replyid
-        GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
-        ORDER BY tm DESC`
-        p2 = db.sql`SELECT authorid, trunc(1000*extract(epoch from tm)) as tm, postid, origreplyid, replyid, body from posts WHERE postid=${postID} AND visibility > 2`;
-        }
+            LEFT JOIN users b ON a.authorid=b.userid
+            WHERE a.postid=${postID}`
         
-        const r = await p;
-        const r2 = await p2;
-        return res.status(200).json({post:r2[0], replies:r, lastupdate:tm});
+        return res.status(200).json({post:r[0], lastupdate:tm});
     } catch(e) {
         console.log("/posts GET error ", e);
         return res.status(500).send("posts GET error: " + e);
     }
 });
 
-// delete post
-app.delete('/posts/:postid', verifyToken, async (req, res) => {
+// update post (edit body)
+app.patch('/posts/:postid', verifyToken, async (req, res) => {
+    try {
+        console.log(curDateStr(), "/posts PATCH req.params= '", req.params, "' req.body='", req.body, "'");
+        const postID = parseIntOrFail(req.params.postid, 'postid', true, '/replies', res);
+        if(postID == false) return;
+        if(!req.body.hasOwnProperty("msgbody"))
+            return res.status(500).send("/posts PATCH 'msgbody' must be defined");
+        const msgbody = req.body.msgbody;
+        if(msgbody === "")
+            return res.status(500).send("/posts PATCH 'msgbody' must not be blank");
+        
+        const tm = Date.now();
+        // TODO only allow query if userID is subscribed
+        const r = await db.sql`UPDATE posts SET body=${msgbody} 
+                        WHERE postid=${postID}`;
+        return res.status(200).json({postid:postID, lastupdate:tm});
+    } catch(e) {
+        console.log("/posts PATCH error ", e);
+        return res.status(500).send("posts PATCH error: " + e);
+    }
 
 });
 
+// get "delta of post" - body if modified since last edit, and # of votes/replies
+// TODO need to validate user allowed to fetch post
+app.get('/postdelta/:postid', verifyToken, async (req, res) => {
+    try {
+        console.log(curDateStr(), "/postdelta GET req.params= '", req.params, "' req.query= '", req.query, "'");
+        // if(req.userID == 0) return res.status(401).send("Valid login required");
+        const postID = parseIntOrFail(req.params.postid, 'postid', true, '/postdelta', res);
+        if(postID == false) return;
+        const lastUpdate = parseIntOrFail(req.params.lastupdate, 'tm_last_body_edit', true, '/postdelta', res);
+        if(tm_last_body_edit == false) return;
+
+        const tm = Date.now();
+        // TODO only allow query if userID is subscribed
+        const r = await db.sql`SELECT a.postid, 
+            trunc(1000*extract(epoch from tm_last_body_edit)) as tm_last_body_edit, 
+            a.body, a.score, a.replies as numreplies, a.replies_top_level as numreplies_top_level
+            FROM posts a
+            WHERE a.postid=${postID}`        
+        let msg_info = {score:r[0].score, replies:r[0].replies, replies:r[0].replies_top_level};
+        if(r[0].tm_last_body_edit > lastupdate)
+            msg_info = {...msg_info, body:r[0].body};
+        return res.status(200).json({msg:msg_info, lastupdate:tm});
+    } catch(e) {
+        console.log("/postdelta GET error ", e);
+        return res.status(500).send("postsdelta GET error: " + e);
+    }
+});
+
+async function doGetReplies(isAll, rt, req, res) {
+    try {
+        console.log(curDateStr(), rt, "GET req.params= '", req.params, "' req.query= '", req.query, "'");
+        // if(req.userID == 0) return res.status(401).send("Valid login required");
+        const postID = parseIntOrFail(req.params.postid, 'postid', true, rt, res);
+        if(postID == false) return;
+        let tm1 = parseIntOrFail(req.query.tmlow, 'tmlow', false, rt, res);
+        let tm2 = parseIntOrFail(req.query.tmhigh, 'tmhigh', false, rt, res);
+        if(tm1 == null) tm1 = 0;
+        if(tm2 == null) tm2 = Date.now();
+        
+        const messagesLimit = 200;
+        const tm = Date.now();
+        // TODO only allow query if userID is subscribed
+        let r = null
+        if(isAll) {
+            r = await db.sql`SELECT a.postid, a.authorid, b.username, 
+                trunc(1000*extract(epoch from tm)) as tm, 
+                a.body, a.score, a.replies as numreplies, a.replies_top_level as numreplies_top_level
+                FROM posts a
+                LEFT JOIN users b ON a.authorid=b.userid
+                WHERE a.replyid_top_level=${postID}
+                AND a.tm BETWEEN to_timestamp(${tm1/1000}) 
+                    AND to_timestamp(${tm2/1000})
+                LIMIT ${messagesLimit}`;
+        } else {
+            r = await db.sql`SELECT a.postid, a.authorid, b.username, 
+                trunc(1000*extract(epoch from tm)) as tm, 
+                a.body, a.score, a.replies as numreplies, a.replies_top_level as numreplies_top_level
+                FROM posts a
+                LEFT JOIN users b ON a.authorid=b.userid
+                WHERE a.replyid=${postID}
+                AND a.tm BETWEEN to_timestamp(${tm1/1000}) 
+                    AND to_timestamp(${tm2/1000})
+                LIMIT ${messagesLimit}`;
+        }
+        
+        return res.status(200).json({replies:r, lastupdate:tm});
+    } catch(e) {
+        console.log(rt, "GET error ", e);
+        return res.status(500).send(rt + "GET error: " + e);
+    }
+
+}
+// get all replies to top-level post
+app.get('/repliesall/:postid', verifyToken, async (req, res) => {
+    doGetReplies(true, '/repliesall', req, res);
+});
+
+// get replies to post
+app.get('/replies/:postid', verifyToken, async (req, res) => {
+    doGetReplies(false, '/replies', req, res);
+});
+
+// delete post
+app.delete('/posts/:postid', verifyToken, async (req, res) => {
+    console.log(curDateStr(), "/posts DELETE req.params= '", req.params, "' req.query= '", req.query, "'");
+    if(req.userID == 0) return res.status(401).send("Valid login required");
+    const postID = parseIntOrFail(req.params.postid, 'postid', true, '/replies', res);
+    if(postID == false) return;
+    try {
+        await db.sql`DELETE FROM posts WHERE postid=${postID} AND authorid=${req.userID}`;
+        return res.status(200).json({postid:postID});
+    } catch(e) {
+        console.log("/posts DELETE error ", e);
+        return res.status(500).send("posts DELETE error: " + e);
+    }
+});
+
 // Route to remove subscription 
-app.delete('/subs/:subid',  verifyToken, async (req, res) => {
+app.delete('/subs/:subid', verifyToken, async (req, res) => {
     try {
         if(req.userID == 0) return res.status(401).send("Valid login required");
         console.log(curDateStr(), "/subs DELETE req.params='", req.params, "'");
@@ -269,7 +363,7 @@ app.post('/subs/:subid', verifyToken, async (req, res) => {
     }
 });
 
-// get list of users, to which user is either or not subscribed
+// get list of subscriptions, or users to which user is not subscribed
 app.get('/subs', verifyToken, async (req, res) => {
     try {
         if(req.userID == 0) return res.status(401).send("Valid login required");
@@ -310,67 +404,46 @@ app.get('/feed', verifyToken, async (req, res) => {
         const nDays = 60;
         const messagesLimit = 10;
         // last update time
-        let lastupdate = Date.now() - 1000*60*60*24*nDays
-        if (req.query.hasOwnProperty("lastupdate")) {
-            try {
-                lastupdate = parseInt(req.query.lastupdate);
-            } catch(e) {
-                return res.status(400).send(`Could not parse 'lastupdate' ${lastupdate}`);
-            }
-        }
-        // const username = req.params.username;
-        const userID = req.userID;
-        console.log(`feed userID='${userID}' lastupdate=${lastupdate}`);
-        let messageFeed=null;
-        if(req.userID != 0) {
-            messageFeed = await db.sql`WITH cte1 as 
-            (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
-             FROM posts a 
-             LEFT JOIN votes b ON a.postid=b.postid 
-             LEFT JOIN users c ON a.authorid=c.userid 
-             WHERE a.authorid IN (SELECT subid FROM usersubs WHERE userid=${userID}) 
-                 AND a.origreplyid IS NULL 
-                 AND a.tm > to_timestamp(${lastupdate/1000})
-             GROUP BY a.postid, a.authorid, c.username, a.tm ORDER BY tm DESC LIMIT ${messagesLimit}) 
-        SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
-               a.body, a.score, count(b.origreplyid) AS numreplies 
-        FROM cte1 a 
-        LEFT JOIN posts b ON a.postid=b.origreplyid 
-        GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
-        ORDER BY tm DESC`;
-        } 
-        // feed for user who is not logged in
-        else { 
-            messageFeed = await db.sql`WITH cte1 as 
-            (SELECT a.postid, a.authorid, c.username, a.tm, a.body, sum(score) AS score
-             FROM posts a 
-             LEFT JOIN votes b ON a.postid=b.postid 
-             LEFT JOIN users c ON a.authorid=c.userid 
-             WHERE a.origreplyid IS NULL 
-                 AND a.tm > to_timestamp(${lastupdate/1000})
-                 AND a.visibility > 2
-             GROUP BY a.postid, a.authorid, c.username, a.tm ORDER BY tm DESC LIMIT ${messagesLimit}) 
-        SELECT a.postid, a.authorid, a.username AS author, trunc(1000*extract(epoch from a.tm)) as tm,
-               a.body, a.score, count(b.origreplyid) AS numreplies 
-        FROM cte1 a 
-        LEFT JOIN posts b ON a.postid=b.origreplyid 
-        GROUP BY a.postid, a.authorid, author, a.tm, a.score, a.body
-        ORDER BY tm DESC`;
-        }
+        let lastupdate = parseIntOrFail(req.query.lastupdate, 'lastupdate', false, '/feed', res);
+        if(lastupdate == null)
+            lastupdate = Date.now() - 1000*60*60*24*nDays
+        
+        let userID = req.userID;
+        console.log(`feed userID=${userID} lastupdate=${lastupdate}`);
+        let messageFeed = null;
 
-        let feed = [];
+        if(userID != 0)
+            messageFeed = await db.sql`SELECT a.postid, a.authorid, b.username, 
+                trunc(1000*extract(epoch from a.tm)) as tm, a.body, a.score,
+                a.replies_top_level as numreplies_top_level, a.replies as numreplies
+             FROM posts a 
+             LEFT JOIN users b ON a.authorid=b.userid 
+             WHERE a.authorid IN (SELECT subid FROM usersubs WHERE userid=${userID})
+                 AND (a.replyid=0::bigint OR a.replyid IS NULL)
+                 AND a.tm > to_timestamp(${lastupdate/1000})
+             ORDER BY tm DESC LIMIT ${messagesLimit}`;
+        else
+            messageFeed = await db.sql`SELECT a.postid, a.authorid, b.username, 
+                trunc(1000*extract(epoch from a.tm)) as tm, a.body, a.score,
+                a.replies_top_level as numreplies_top_level, a.replies as numreplies
+             FROM posts a 
+             LEFT JOIN users b ON a.authorid=b.userid 
+             WHERE a.visibility > 2
+                 AND (a.replyid=0::bigint OR a.replyid IS NULL)
+                 AND a.tm > to_timestamp(${lastupdate/1000})
+             ORDER BY tm DESC LIMIT ${messagesLimit}`;
+
+        
         tm = Date.now();
         console.log("messageFeed.length= ", messageFeed.length);
-        const f = async () => {
-            for (m of messageFeed) {
-                // leave blank - client will request if needed
-                m.replies = [];
-                feed.push(m); 
-            }
+        let feed = [];
+        for (m of messageFeed) {
+            // leave blank - client will request if needed
+            m.replies = [];
+            feed.push(m); 
         }
-        await f();
 
-        return res.status(200).json({"feed":feed, "lastupdate":tm});
+        return res.status(200).json({feed:messageFeed, lastupdate:tm});
     } catch(e) {
         console.log(e);
         return res.status(500).send('feed generation error: ' + e);
@@ -386,8 +459,11 @@ app.post('/vote/:postid', verifyToken, async (req, res) => {
         const score = parseIntOrFail(req.query.score, 'score', true, '/vote POST', res);
         if (score === false) return;
         // TODO should not be able to vote on your own post
-        await db.sql`INSERT INTO votes (postid, voterid, score)
-            VALUES(${postid}, ${req.userID}, ${score})`;
+        await db.sql.begin(async (sql) => {
+            await sql`INSERT INTO votes (postid, voterid, score)
+                VALUES(${postid}, ${req.userID}, ${score})`;
+            await sql`UPDATE posts SET score=score+${score} WHERE postid=${postid}`;
+        });
         return res.status(201).json({postid, score});
     } catch(e) {
         console.log("/vote error ", e)
@@ -401,8 +477,14 @@ app.delete('/vote/:postid', verifyToken, async (req, res) => {
         console.log(curDateStr(), "/vote DELETE req.params='", req.params, "' req.query='", req.query, "'");
         const postid = parseIntOrFail(req.params.postid, 'postid', true, '/vote DELETE', res);
         if (postid === false) return;
-        await db.sql`DELETE FROM votes WHERE postid=${postid} 
-            AND voterid=${req.userID}`;
+        await db.sql.begin(async (sql) => {
+            const r = await sql`SELECT score FROM votes WHERE postid=${postid} 
+                AND voterid=${req.userID}`;
+            const score = r[0].score;
+            await sql`DELETE FROM votes WHERE postid=${postid} 
+                AND voterid=${req.userID}`;
+            await sql`UPDATE posts SET score=score-${score} WHERE postid=${postid}`;
+        });
         return res.status(200).json({postid});
     } catch(e) {
         console.log("/vote error ", e)
