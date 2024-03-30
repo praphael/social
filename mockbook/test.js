@@ -54,8 +54,12 @@ async function testLogin(username) {
 }
 
 async function testFeed(token) {
-    const [feed, s ]= await doRequest('/feed', 'GET', null, 'json', token);
-    return feed.feed;
+    const [r, s] = await doRequest('/feed', 'GET', null, 'json', token);
+    const lu = r.lastupdate;
+    console.log()
+    const [r2, s2] = await doRequest(`/feed?lastupdate=${lu}`, 'GET', null, 'json', token);
+    const [r3, s3] = await doRequest(`/feed?olderthan=${lu}`, 'GET', null, 'json', token);
+    return r3.feed;
 }
 
 async function testSubs(token) {
@@ -111,13 +115,27 @@ async function testPost(token) {
         console.log(`**** FAILED (reply, edit) submitted body='${body3.msgbody}' != returned body=${post3.body}`);
 }
 
-async function testPostdelta(token) {
+async function testPostdelta(token, feed) {
+    const postid = feed[3].postid;
+    // console.log(`postid=${postid} postid2=${postid2}`)
+    const [{post:post1, lastupdate:tm1}, t1] = await doRequest(`/posts/${postid}`, 'GET', null, 'json', token);
+    console.log(`post1 score= ${post1.score} replies=${post1.numreplies} replies_top_level=${post1.numreplies_top_level}`);
+    console.log(` body='${post1.body}'`);
+    await doRequest(`/vote/${postid}?score=1`, 'POST', null, 'json', token, 201);
+    const body2 = { msgbody : "fooreply", replyid_top_level:postid, replyid:postid };
+    const [{postid:postID2, lastupdate:tm2}, t4] = await doRequest('/posts', 'POST', body2, 'json', token, 201);
+    const [{msg:msg_u, lastupdate:tm3}, t5] = await doRequest(`/postdelta/${postid}?lastupdate=${tm1}`, 'GET', null, 'json', token);
+    console.log("msg_u=", msg_u);
 
+    const body3 = { msgbody : "foo" };
+    const [{postid:postID2_e, lastupdate:tm4}, t6] = await doRequest(`/posts/${postid}`, 'PATCH', body3, 'json', token, 200);
+    const [{msg:msg_u2, lastupdate:tm5}, t7] = await doRequest(`/postdelta/${postid}?lastupdate=${tm1}`, 'GET', null, 'json', token);
+    console.log("msg_u2=", msg_u2);
 }
 
 async function testVote(token, feed) {
-    const postid = parseInt(feed[0].postid);
-    const postid2 = parseInt(feed[1].postid);
+    const postid = parseInt(feed[4].postid);
+    const postid2 = parseInt(feed[5].postid);
     // console.log(`postid=${postid} postid2=${postid2}`)
     const [{post:post1, lastupdate:tm1}, t1] = await doRequest(`/posts/${postid}`, 'GET', null, 'json', token);
     const [{post:post2, lastupdate:tm2}, t2] = await doRequest(`/posts/${postid2}`, 'GET', null, 'json', token);
@@ -137,9 +155,9 @@ async function testVote(token, feed) {
     if(post2_d.score != (post2.score - 1))
         console.log(`***** FAIL score not updated expected ${post2.score - 1} got ${post2_d.score}`);
     if(post1.score != post1_o.score)
-        console.log(`***** FAIL score not updated (DELETE) expected ${post1.score} got ${post1_o.score}`);
+        console.log(`***** FAIL score not equal after DELETE expected ${post1.score} got ${post1_o.score}`);
     if(post2.score != post2_o.score)
-        console.log(`***** FAIL score not updated (DELETE) expected ${post2.score} got ${post2_o.score}`);
+        console.log(`***** FAIL score not equal after DELETE expected ${post2.score} got ${post2_o.score}`);
 }
 
 async function getReplies(token, postID, expectedreplies) {
@@ -172,7 +190,7 @@ async function testReplies(token, feed) {
 }
 
 async function test() {
-    usernames = ["alphabravo", "whiskeytango", "foxtrotlima", "yankeezulu"];
+    usernames = ["alphacharlie", "echodelta", "limafoxtrot", "zuluquebec"];
     for(let u of usernames) {
         const {token, userID} = await testLogin(u);
         console.log(`username='${u}' userID=${userID}`);
@@ -185,7 +203,7 @@ async function test() {
         console.log(`testPost done`);
         await testVote(token, feed);
         console.log(`testVote done`);
-        await testPostdelta(token, userID, feed);
+        await testPostdelta(token, feed);
         console.log(`testPostdelta done`);
         // get the feed again, since we addded post
         const feed2 = await testFeed(token);
